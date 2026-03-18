@@ -1,0 +1,45 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Temp/debug output files
+*_report.txt
+*_output.txt
+*_results.txt
+*_log.txt
+build_log.txt
+lint*.txt
+tsc_error.log
+type_report.txt
+temp_*
+restored_*
+metadata.json
+eslint.json
+lint.json
+lint.txt
+
+# Playwright artifacts
+playwright-report/
+test-results/
+test-results.json

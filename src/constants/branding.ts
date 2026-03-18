@@ -1,0 +1,8 @@
+export const BRAND_NAME = 'ZEROHUE';
+export const BRAND_ALT_NAME = 'ZEROHUE Crypto Trading Simulator';
+export const BRAND_SUBTITLE = 'CRYPTO TRADING SIMULATOR';
+export const BRAND_SUBTITLE_TITLE = 'Crypto Trading Simulator';
+export const SITE_URL = 'https://zerohue.org';
+export const HOMEPAGE_TITLE = `${BRAND_NAME} | ${BRAND_SUBTITLE_TITLE}`;
+export const HERO_BRAND_BADGE = `LOCAL-FIRST ${BRAND_SUBTITLE}`;
+export const COPYRIGHT_YEAR = 2026;
