@@ -241,6 +241,74 @@ describe('useOfflineOrderExecution internals', () => {
       executionPrice: 110,
       executionTime: 2000,
     });
+
+    const appliedResult = __offlineExecutionInternals.applyReplayEventsToState(
+      result.events,
+      [order],
+      {
+        balance: 900,
+        initialBalance: 1000,
+        holdings: [],
+        validTradesCount: 0,
+        grossProfit: 0,
+        grossLoss: 0,
+      },
+      liveCoins
+    );
+
+    expect(appliedResult.filledCount).toBe(1);
+    expect(appliedResult.triggeredHoldingCount).toBe(1);
+    expect(appliedResult.nextOrders[0].status).toBe('FILLED');
+    expect(appliedResult.nextPortfolio.holdings).toEqual([]);
+    expect(appliedResult.nextPortfolio.balance).toBeCloseTo(1009.78);
+    expect(appliedResult.nextPortfolio.validTradesCount).toBe(0);
+    expect(appliedResult.newTransactions).toHaveLength(2);
+    expect(appliedResult.newTransactions.map((tx) => tx.type)).toEqual(['BUY', 'SELL']);
+  });
+
+  it('marks offline BUY fills as FILLED when applying replay events to state', () => {
+    const order: Order = {
+      id: 'buy-fill-status',
+      type: 'BUY',
+      coinId: 'bitcoin',
+      coinSymbol: 'BTC',
+      amount: 1,
+      limitPrice: 100,
+      total: 100,
+      timestamp: 1,
+      status: 'OPEN',
+    };
+
+    const result = __offlineExecutionInternals.applyReplayEventsToState(
+      [
+        {
+          type: 'FILL',
+          order,
+          executionPrice: 100,
+          executionTime: 1000,
+        },
+      ],
+      [order],
+      {
+        balance: 900,
+        initialBalance: 1000,
+        holdings: [],
+        validTradesCount: 0,
+        grossProfit: 0,
+        grossLoss: 0,
+      },
+      liveCoins
+    );
+
+    expect(result.filledCount).toBe(1);
+    expect(result.nextOrders[0].status).toBe('FILLED');
+    expect(result.nextPortfolio.balance).toBe(900);
+    expect(result.nextPortfolio.holdings).toHaveLength(1);
+    expect(result.newTransactions).toHaveLength(1);
+    expect(result.newTransactions[0]).toMatchObject({
+      type: 'BUY',
+      pricePerCoin: 100,
+    });
   });
 
   it('should not trigger TP/SL in the same candle that fills an offline BUY', () => {

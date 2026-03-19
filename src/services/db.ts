@@ -1,4 +1,4 @@
-import { openDB, IDBPDatabase } from 'idb';
+import { deleteDB, openDB, IDBPDatabase } from 'idb';
 import { Transaction, Order } from '../types';
 
 export interface ZEROHUESchema {
@@ -129,5 +129,22 @@ export const dbService = {
   async clear<T extends keyof ZEROHUESchema>(storeName: T) {
     const db = await initDB();
     return db.clear(storeName);
+  },
+
+  async clearSimulatorState() {
+    const db = await initDB();
+    const tx = db.transaction(['orders', 'transactions'], 'readwrite');
+    tx.objectStore('orders').clear();
+    tx.objectStore('transactions').clear();
+    await tx.done;
+    return true;
+  },
+
+  async resetLocalPersistence() {
+    const existingDb = await (dbPromise?.catch(() => null) ?? Promise.resolve(null));
+    existingDb?.close();
+    dbPromise = null;
+    await deleteDB(DB_NAME);
+    return true;
   },
 };

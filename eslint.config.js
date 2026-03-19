@@ -4,7 +4,7 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 import tseslint from 'typescript-eslint';
 
-const ignores = ['dist', 'dist-ssr', 'coverage', 'playwright-report', 'test-results'];
+const ignores = ['.vite', 'dist', 'dist-ssr', 'coverage', 'playwright-report', 'test-results'];
 
 const commonRules = {
   'no-console': ['warn', { allow: ['warn', 'error'] }],

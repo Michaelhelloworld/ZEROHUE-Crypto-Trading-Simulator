@@ -4,9 +4,11 @@ import { motion } from 'framer-motion';
 import { Link, useLocation } from 'react-router-dom';
 import MobileNavButton from '../common/MobileNavButton';
 import { useHaptic } from '../../hooks/useHaptic';
+import { normalizePathname } from '../../utils/pathname';
 
 const MobileNav: React.FC = () => {
   const location = useLocation();
+  const pathname = normalizePathname(location.pathname);
   const { trigger } = useHaptic();
 
   const tabs = [
@@ -25,7 +27,7 @@ const MobileNav: React.FC = () => {
     >
       <div className="mx-auto flex max-w-3xl items-stretch gap-1 px-2 pb-safe pl-safe pr-safe pt-2">
         {tabs.map((tab) => {
-          const isActive = location.pathname === tab.path;
+          const isActive = pathname === tab.path;
           return (
             <div key={tab.path} className="relative flex min-w-0 flex-1 justify-center">
               <Link

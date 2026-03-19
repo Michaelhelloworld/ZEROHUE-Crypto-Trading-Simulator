@@ -144,6 +144,17 @@ describe('App routing', () => {
     expect(screen.getByText('Disclaimer Modal')).toBeInTheDocument();
   });
 
+  it('still treats trailing-slash terminal routes as trading routes', async () => {
+    window.history.pushState({}, '', '/markets/');
+    render(<App />);
+    await act(async () => {
+      await vi.dynamicImportSettled();
+    });
+
+    expect(await screen.findByText('Terminal Shell')).toBeInTheDocument();
+    expect(screen.getByText('Disclaimer Modal')).toBeInTheDocument();
+  });
+
   it('routes trade pages through the terminal shell', async () => {
     window.history.pushState({}, '', '/trade/bitcoin');
     render(<App />);

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router';
 import { HOMEPAGE_TITLE, SITE_URL } from '../constants/branding';
+import { normalizePathname } from '../utils/pathname';
 
 interface SEOProps {
   title?: string;
@@ -56,14 +57,12 @@ export const useSEO = ({
   structuredData,
 }: SEOProps) => {
   const location = useLocation();
+  const canonicalPath = normalizePathname(location.pathname);
 
   useEffect(() => {
     const baseTitle = HOMEPAGE_TITLE;
     const newTitle = fullTitle ?? (title ? `${title} | ${baseTitle}` : baseTitle);
-    const canonicalUrl = new URL(
-      `${location.pathname}${location.search}`,
-      `${SITE_URL}/`
-    ).toString();
+    const canonicalUrl = new URL(canonicalPath, `${SITE_URL}/`).toString();
 
     document.title = newTitle;
 
@@ -103,5 +102,5 @@ export const useSEO = ({
     } else if (existingScript) {
       existingScript.remove();
     }
-  }, [title, fullTitle, description, robots, structuredData, location.pathname, location.search]);
+  }, [title, fullTitle, description, robots, structuredData, canonicalPath]);
 };

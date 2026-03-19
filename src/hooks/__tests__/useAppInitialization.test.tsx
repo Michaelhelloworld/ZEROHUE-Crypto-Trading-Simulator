@@ -66,6 +66,8 @@ describe('useAppInitialization resilience', () => {
       setSelectedHoldingForEdit: vi.fn(),
     } as AppState;
 
+    localStorage.setItem('zerohue_portfolio', JSON.stringify(mockState.portfolio));
+
     vi.spyOn(useStoreModule, 'useStore').mockImplementation(
       (selector?: (state: AppState) => unknown) => {
         if (typeof selector === 'function') return selector(mockState);
@@ -415,6 +417,239 @@ describe('useAppInitialization resilience', () => {
     consoleSpy.mockRestore();
   });
 
+  it('cancels open orders when portfolio hydration falls back to defaults after unreadable storage', async () => {
+    localStorage.setItem('zerohue_portfolio', '{bad-json');
+    const persistedOpenBuyOrder = {
+      id: 'ord-open-buy',
+      type: 'BUY' as const,
+      coinId: 'bitcoin',
+      coinSymbol: 'BTC',
+      amount: 1,
+      limitPrice: 100,
+      total: 100,
+      timestamp: 1,
+      status: 'OPEN' as const,
+    };
+
+    vi.mocked(dbService.getAll).mockImplementation(async (storeName) => {
+      if (storeName === 'orders') return [persistedOpenBuyOrder];
+      return [];
+    });
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(mockState.portfolio).toEqual({
+        balance: 50000,
+        initialBalance: 50000,
+        holdings: [],
+        peakBalance: 50000,
+        historicalMDD: 0,
+        grossProfit: 0,
+        grossLoss: 0,
+        validTradesCount: 0,
+      });
+      expect(mockState.orders).toEqual([
+        expect.objectContaining({
+          id: 'ord-open-buy',
+          status: 'CANCELLED',
+          amount: 0,
+          total: 0,
+          lotAllocations: [],
+        }),
+      ]);
+    });
+
+    expect(dbService.replaceAll).toHaveBeenCalledWith('orders', [
+      expect.objectContaining({
+        id: 'ord-open-buy',
+        status: 'CANCELLED',
+        amount: 0,
+        total: 0,
+        lotAllocations: [],
+      }),
+    ]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Recovered portfolio state could not safely preserve open orders. Open orders were cancelled to avoid cash and holdings mismatches.'
+    );
+
+    warnSpy.mockRestore();
+    consoleSpy.mockRestore();
+  });
+
+  it('cancels open orders when portfolio storage is missing but IndexedDB still contains open orders', async () => {
+    localStorage.removeItem('zerohue_portfolio');
+    const persistedOpenBuyOrder = {
+      id: 'ord-missing-portfolio',
+      type: 'BUY' as const,
+      coinId: 'bitcoin',
+      coinSymbol: 'BTC',
+      amount: 1,
+      limitPrice: 100,
+      total: 100,
+      timestamp: 1,
+      status: 'OPEN' as const,
+    };
+
+    vi.mocked(dbService.getAll).mockImplementation(async (storeName) => {
+      if (storeName === 'orders') return [persistedOpenBuyOrder];
+      return [];
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(mockState.portfolio).toEqual({
+        balance: 50000,
+        initialBalance: 50000,
+        holdings: [],
+        peakBalance: 50000,
+        historicalMDD: 0,
+        grossProfit: 0,
+        grossLoss: 0,
+        validTradesCount: 0,
+      });
+      expect(mockState.orders).toEqual([
+        expect.objectContaining({
+          id: 'ord-missing-portfolio',
+          status: 'CANCELLED',
+          amount: 0,
+          total: 0,
+          lotAllocations: [],
+        }),
+      ]);
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Recovered portfolio state could not safely preserve open orders. Open orders were cancelled to avoid cash and holdings mismatches.'
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('cancels open orders when a parseable portfolio normalizes into an unsafe balance state', async () => {
+    localStorage.setItem(
+      'zerohue_portfolio',
+      JSON.stringify({
+        balance: -100,
+        initialBalance: -200,
+        holdings: [],
+      })
+    );
+    const persistedOpenBuyOrder = {
+      id: 'ord-unsafe-portfolio',
+      type: 'BUY' as const,
+      coinId: 'bitcoin',
+      coinSymbol: 'BTC',
+      amount: 1,
+      limitPrice: 100,
+      total: 100,
+      timestamp: 1,
+      status: 'OPEN' as const,
+    };
+
+    vi.mocked(dbService.getAll).mockImplementation(async (storeName) => {
+      if (storeName === 'orders') return [persistedOpenBuyOrder];
+      return [];
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(mockState.portfolio.balance).toBe(50000);
+      expect(mockState.orders).toEqual([
+        expect.objectContaining({
+          id: 'ord-unsafe-portfolio',
+          status: 'CANCELLED',
+          amount: 0,
+          total: 0,
+          lotAllocations: [],
+        }),
+      ]);
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Recovered portfolio state could not safely preserve open orders. Open orders were cancelled to avoid cash and holdings mismatches.'
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('cancels open orders when portfolio holdings lose trusted lot ids during hydration', async () => {
+    localStorage.setItem(
+      'zerohue_portfolio',
+      JSON.stringify({
+        balance: 50000,
+        initialBalance: 50000,
+        holdings: [
+          {
+            coinId: 'bitcoin',
+            amount: 1,
+            averageCost: 30000,
+            openedAt: 10,
+            meetsVolumeCondition: true,
+          },
+        ],
+      })
+    );
+    const persistedOpenSellOrder = {
+      id: 'ord-untrusted-lot-id',
+      type: 'SELL' as const,
+      coinId: 'bitcoin',
+      coinSymbol: 'BTC',
+      amount: 1,
+      limitPrice: 100,
+      total: 100,
+      timestamp: 1,
+      status: 'OPEN' as const,
+      lotAllocations: [
+        {
+          lotId: 'legacy-lot-id',
+          coinId: 'bitcoin',
+          amount: 1,
+          averageCost: 30000,
+          openedAt: 10,
+          meetsVolumeCondition: true,
+          wasFullLotClose: true,
+        },
+      ],
+    };
+
+    vi.mocked(dbService.getAll).mockImplementation(async (storeName) => {
+      if (storeName === 'orders') return [persistedOpenSellOrder];
+      return [];
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(mockState.orders).toEqual([
+        expect.objectContaining({
+          id: 'ord-untrusted-lot-id',
+          status: 'CANCELLED',
+          amount: 0,
+          total: 0,
+          lotAllocations: [],
+        }),
+      ]);
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Recovered portfolio state could not safely preserve open orders. Open orders were cancelled to avoid cash and holdings mismatches.'
+    );
+
+    warnSpy.mockRestore();
+  });
+
   it('drops unsupported negative and zero-size portfolio holdings during hydration', async () => {
     localStorage.setItem(
       'zerohue_portfolio',
@@ -452,6 +687,7 @@ describe('useAppInitialization resilience', () => {
   });
 
   it('does not rebuild holdings from transaction history when portfolio storage is empty', async () => {
+    localStorage.removeItem('zerohue_portfolio');
     const persistedTransactions = [
       {
         id: 'tx-shib-buy',
@@ -476,6 +712,43 @@ describe('useAppInitialization resilience', () => {
     await waitFor(() => {
       expect(mockState.transactions).toEqual(persistedTransactions);
       expect(mockState.portfolio.holdings).toEqual([]);
+    });
+  });
+
+  it('overwrites stale in-memory orders and transactions when IndexedDB hydrates empty arrays', async () => {
+    mockState.orders = [
+      {
+        id: 'ord-stale',
+        type: 'BUY',
+        coinId: 'bitcoin',
+        coinSymbol: 'BTC',
+        amount: 1,
+        limitPrice: 100,
+        total: 100,
+        timestamp: 1,
+        status: 'OPEN',
+      },
+    ];
+    mockState.transactions = [
+      {
+        id: 'tx-stale',
+        type: 'BUY',
+        coinId: 'bitcoin',
+        coinSymbol: 'BTC',
+        amount: 1,
+        pricePerCoin: 100,
+        total: 100,
+        fee: 0.1,
+        timestamp: 1,
+      },
+    ];
+    vi.mocked(dbService.getAll).mockResolvedValue([]);
+
+    renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(mockState.orders).toEqual([]);
+      expect(mockState.transactions).toEqual([]);
     });
   });
 
@@ -632,9 +905,9 @@ describe('useAppInitialization resilience', () => {
       type: 'SELL' as const,
       coinId: 'bitcoin',
       coinSymbol: 'BTC',
-      amount: 0.4,
+      amount: 1,
       limitPrice: 120,
-      total: 48,
+      total: 120,
       timestamp: 5,
       status: 'OPEN' as const,
       lotAllocations: [
@@ -685,23 +958,86 @@ describe('useAppInitialization resilience', () => {
     });
   });
 
-  it('keeps hydration resilient when IndexedDB reads fail', async () => {
-    const staleOrders = [{ id: 'ord-old' }];
-    const staleTransactions = [{ id: 'tx-old' }];
+  it('preserves zero-sized cancelled orders during hydration so order history survives refreshes', async () => {
+    const cancelledOrder = {
+      id: 'ord-cancelled-zero',
+      type: 'BUY' as const,
+      coinId: 'bitcoin',
+      coinSymbol: 'BTC',
+      amount: 0,
+      limitPrice: 100,
+      total: 0,
+      timestamp: 5,
+      status: 'CANCELLED' as const,
+      updatedAt: 6,
+    };
 
-    localStorage.setItem('zerohue_orders', JSON.stringify(staleOrders));
-    localStorage.setItem('zerohue_transactions', JSON.stringify(staleTransactions));
-    vi.mocked(dbService.getAll).mockRejectedValue(new Error('idb unavailable'));
+    vi.mocked(dbService.getAll).mockImplementation(async (storeName) => {
+      if (storeName === 'orders') return [cancelledOrder];
+      return [];
+    });
+
+    renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(mockState.orders).toEqual([cancelledOrder]);
+    });
+  });
+
+  it('blocks startup when open orders cannot be hydrated from IndexedDB', async () => {
+    vi.mocked(dbService.getAll).mockImplementation(async (storeName) => {
+      if (storeName === 'orders') {
+        throw new Error('idb unavailable');
+      }
+
+      return [];
+    });
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const { result } = renderHook(() => useAppInitialization());
 
     await waitFor(() => {
-      expect(result.current.isHydrated).toBe(true);
+      expect(result.current.initializationStage).toBe('hydration_error');
+      expect(result.current.hydrationError).toMatchObject({
+        code: 'orders_unavailable',
+      });
+    });
+
+    expect(result.current.isHydrated).toBe(false);
+    expect(marketEngineModule.useMarketEngine).toHaveBeenCalledWith(false);
+
+    consoleSpy.mockRestore();
+  });
+
+  it('blocks startup when transaction history cannot be hydrated from IndexedDB', async () => {
+    const staleOrders = [{ id: 'ord-old' }];
+    const staleTransactions = [{ id: 'tx-old' }];
+
+    localStorage.setItem('zerohue_orders', JSON.stringify(staleOrders));
+    localStorage.setItem('zerohue_transactions', JSON.stringify(staleTransactions));
+    vi.mocked(dbService.getAll).mockImplementation(async (storeName) => {
+      if (storeName === 'orders') return [];
+      if (storeName === 'transactions') {
+        throw new Error('idb unavailable');
+      }
+
+      return [];
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(result.current.initializationStage).toBe('hydration_error');
+      expect(result.current.hydrationError).toMatchObject({
+        code: 'transactions_unavailable',
+      });
       expect(mockState.orders).toEqual([]);
       expect(mockState.transactions).toEqual([]);
     });
 
+    expect(result.current.isHydrated).toBe(false);
+    expect(marketEngineModule.useMarketEngine).toHaveBeenCalledWith(false);
     expect(localStorage.getItem('zerohue_orders')).toBe(JSON.stringify(staleOrders));
     expect(localStorage.getItem('zerohue_transactions')).toBe(JSON.stringify(staleTransactions));
 

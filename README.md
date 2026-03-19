@@ -28,6 +28,8 @@ readable on GitHub, but it is **not** an open-source project.
 - Holdings model: FIFO lots internally, aggregated positions in the portfolio UI
 - Persistence: `portfolio` in localStorage, orders / transactions / market history in IndexedDB
 - Startup flow: hydration and offline replay must settle before the live engine becomes ready
+- Startup guardrails: failed `orders` / `transactions` hydration blocks terminal startup and surfaces
+  recovery actions instead of entering a split local state
 
 ## Stack
 
@@ -48,9 +50,9 @@ readable on GitHub, but it is **not** an open-source project.
 
 ### Install
 
+Clone or download the repository, then install dependencies from the project root:
+
 ```bash
-git clone <your-repo-url>
-cd zerohue
 npm install
 ```
 
@@ -107,6 +109,18 @@ npm run test:e2e:matrix
 npm run test:e2e:ui
 ```
 
+## Startup recovery
+
+- If persisted `orders` or `transactions` cannot be restored safely, ZEROHUE blocks terminal startup
+  instead of continuing with incomplete local state.
+- The startup recovery screen keeps `Retry Hydration` and `Reload App`, and can also surface
+  browser-only repair actions depending on the failure source.
+- `Clear Orders Cache And Rebuild Cash Snapshot` removes persisted orders and rebuilds a clean
+  cash-only portfolio snapshot from the browser's recoverable account value.
+- `Clear Transaction History And Reset Performance Snapshot` removes persisted trade history and
+  resets realized performance metrics while preserving current orders and holdings.
+- `Factory Reset Local Simulator State` rebuilds the entire local simulator snapshot on the device.
+
 ## Windows note
 
 If PowerShell blocks `npm.ps1`, run commands from Command Prompt or Git Bash, or temporarily relax
@@ -119,10 +133,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 ## Repo map
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): runtime structure and data-flow notes
-- `src/App.tsx`: route composition, shell layout, startup orchestration
+- `src/App.tsx`: route composition and public/terminal shell split
+- `src/hooks/useAppInitialization.ts`: hydration, replay gating, and startup-stage orchestration
+- `src/components/layout/TerminalShell.tsx`: terminal startup gating and recovery UI
+- `src/utils/appPersistence.ts`: persisted-state normalization, reconciliation, and hydration rules
 - `src/workers/marketEngine.worker.ts`: matching engine and trigger execution
 - `src/hooks/useOfflineOrderExecution.tsx`: offline replay reconciliation
-- `src/components/views/IntroView.tsx`: public landing page
 
 ## Notes for reviewers
 

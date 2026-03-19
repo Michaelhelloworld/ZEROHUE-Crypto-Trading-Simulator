@@ -217,7 +217,11 @@ export const setCoinPrice = async (page: Page, coinId: string, nextPrice: number
 };
 
 export const gotoTerminal = async (page: Page) => {
-  await page.goto('/markets', { waitUntil: 'commit', timeout: APP_READY_TIMEOUT_MS });
+  await gotoTerminalRoute(page, '/markets');
+};
+
+export const gotoTerminalRoute = async (page: Page, path: string) => {
+  await page.goto(path, { waitUntil: 'commit', timeout: APP_READY_TIMEOUT_MS });
   await acceptDisclaimerIfPresent(page);
   await waitForStoreReady(page);
   await expect(page.locator('#main-scroll-container')).toBeVisible({ timeout: 20_000 });
@@ -257,4 +261,48 @@ export const gotoTrade = async (page: Page, coinId: string) => {
   await waitForStoreReady(page);
   await ensureTradePanelVisible(page);
   await expect(page.getByLabel('Trade amount input')).toBeVisible({ timeout: 20_000 });
+};
+
+export const submitTradeAndWaitForPortfolio = async (page: Page, tradeType: 'BUY' | 'SELL') => {
+  const confirmButton = page.getByRole('button', { name: new RegExp(`Confirm ${tradeType}`, 'i') });
+  await expect(confirmButton).toBeVisible({ timeout: 20_000 });
+  await expect(confirmButton).toBeEnabled({ timeout: 20_000 });
+  await confirmButton.scrollIntoViewIfNeeded().catch(() => {});
+
+  await Promise.all([
+    page.waitForURL('**/portfolio', { timeout: 30_000 }),
+    confirmButton.click({ force: true }),
+  ]);
+};
+
+export const selectTradeOrderType = async (page: Page, orderType: 'MARKET' | 'LIMIT') => {
+  const orderTypeLabel =
+    orderType === 'LIMIT'
+      ? /Limit order - Execute at specific price/i
+      : /Market order - Execute at current price/i;
+  const orderTypeButton = page.getByRole('button', { name: orderTypeLabel });
+  await expect(orderTypeButton).toBeVisible({ timeout: 20_000 });
+  await expect(orderTypeButton).toBeEnabled({ timeout: 20_000 });
+  await orderTypeButton.scrollIntoViewIfNeeded().catch(() => {});
+  await orderTypeButton.click({ force: true });
+  await expect(orderTypeButton).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
+};
+
+export const confirmCancelFirstOrder = async (page: Page) => {
+  const cancelButton = page.getByRole('button', { name: /Cancel( Order)?/i }).first();
+  const confirmCancel = page.getByRole('button', { name: /Yes, Cancel/i }).first();
+
+  await expect(cancelButton).toBeVisible({ timeout: 20_000 });
+  await cancelButton.scrollIntoViewIfNeeded().catch(() => {});
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await cancelButton.click({ force: true });
+    if (await confirmCancel.isVisible().catch(() => false)) {
+      break;
+    }
+    await page.waitForTimeout(250);
+  }
+
+  await expect(confirmCancel).toBeVisible({ timeout: 5_000 });
+  await confirmCancel.click({ force: true });
 };

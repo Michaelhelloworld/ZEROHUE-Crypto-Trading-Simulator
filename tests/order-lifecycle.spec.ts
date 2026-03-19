@@ -1,11 +1,14 @@
 import { expect, test, Page } from '@playwright/test';
 import {
+  confirmCancelFirstOrder,
   getCoinPrice,
   getSnapshot,
   gotoTerminal,
   gotoTrade,
+  selectTradeOrderType,
   seedAcceptedDisclaimer,
   setCoinPrice,
+  submitTradeAndWaitForPortfolio,
   waitForOrdersPersisted,
   waitForStoreReady,
 } from './helpers/terminal';
@@ -56,10 +59,10 @@ test.describe('ZEROHUE order lifecycle', () => {
       .toBeGreaterThan(0);
     const livePrice = await getCoinPrice(page, 'bitcoin');
     await page.getByRole('button', { name: /Select Sell order type/i }).click();
-    await page.getByRole('button', { name: /Limit order - Execute at specific price/i }).click();
+    await selectTradeOrderType(page, 'LIMIT');
     await page.getByLabel('Limit price input').fill((livePrice * 1.2).toFixed(2));
     await page.getByLabel('Trade amount input').fill('0.02');
-    await page.getByRole('button', { name: /Confirm SELL/i }).click();
+    await submitTradeAndWaitForPortfolio(page, 'SELL');
 
     await page.waitForFunction(() => {
       const store = window.__ZEROHUE_STORE__;
@@ -80,12 +83,7 @@ test.describe('ZEROHUE order lifecycle', () => {
     expect(afterPlaceHolding?.amount || 0).toBeLessThan(initialHolding?.amount || 0);
 
     await openOrdersPage(page);
-    const cancelButton = page.getByRole('button', { name: /Cancel( Order)?/i }).first();
-    await expect(cancelButton).toBeVisible({ timeout: 20_000 });
-    await cancelButton.click({ force: true });
-    const confirmCancel = page.getByRole('button', { name: /Yes, Cancel/i }).first();
-    await expect(confirmCancel).toBeVisible({ timeout: 20_000 });
-    await confirmCancel.click({ force: true });
+    await confirmCancelFirstOrder(page);
 
     await page.waitForFunction(() => {
       const store = window.__ZEROHUE_STORE__;
@@ -113,12 +111,10 @@ test.describe('ZEROHUE order lifecycle', () => {
     const initial = await getSnapshot(page);
 
     await gotoTrade(page, 'bitcoin');
-    await page.getByRole('button', { name: /Limit order - Execute at specific price/i }).click();
+    await selectTradeOrderType(page, 'LIMIT');
     await page.getByLabel('Limit price input').fill('1');
     await page.getByLabel('Trade amount input').fill('0.02');
-    await page.getByRole('button', { name: /Confirm BUY/i }).click();
-
-    await page.waitForURL('**/portfolio');
+    await submitTradeAndWaitForPortfolio(page, 'BUY');
     await page.waitForFunction(() => {
       const store = window.__ZEROHUE_STORE__;
       return Boolean(
@@ -135,12 +131,7 @@ test.describe('ZEROHUE order lifecycle', () => {
     expect(afterPlace.balance).toBeLessThan(initial.balance);
 
     await openOrdersPage(page);
-    const cancelButton = page.getByRole('button', { name: /Cancel( Order)?/i }).first();
-    await expect(cancelButton).toBeVisible({ timeout: 20_000 });
-    await cancelButton.click({ force: true });
-    const confirmCancel = page.getByRole('button', { name: /Yes, Cancel/i }).first();
-    await expect(confirmCancel).toBeVisible({ timeout: 20_000 });
-    await confirmCancel.click({ force: true });
+    await confirmCancelFirstOrder(page);
 
     await page.waitForFunction(() => {
       const store = window.__ZEROHUE_STORE__;
@@ -163,12 +154,10 @@ test.describe('ZEROHUE order lifecycle', () => {
     await gotoTerminal(page);
 
     await gotoTrade(page, 'bitcoin');
-    await page.getByRole('button', { name: /Limit order - Execute at specific price/i }).click();
+    await selectTradeOrderType(page, 'LIMIT');
     await page.getByLabel('Limit price input').fill('1');
     await page.getByLabel('Trade amount input').fill('0.02');
-    await page.getByRole('button', { name: /Confirm BUY/i }).click();
-
-    await page.waitForURL('**/portfolio');
+    await submitTradeAndWaitForPortfolio(page, 'BUY');
     await page.waitForFunction(() => {
       const store = window.__ZEROHUE_STORE__;
       return Boolean(
@@ -211,12 +200,10 @@ test.describe('ZEROHUE order lifecycle', () => {
     const livePrice = await getCoinPrice(page, 'bitcoin');
     const limitPrice = Math.max(1, livePrice * 0.6);
 
-    await page.getByRole('button', { name: /Limit order - Execute at specific price/i }).click();
+    await selectTradeOrderType(page, 'LIMIT');
     await page.getByLabel('Limit price input').fill(limitPrice.toFixed(2));
     await page.getByLabel('Trade amount input').fill('0.01');
-    await page.getByRole('button', { name: /Confirm BUY/i }).click();
-
-    await page.waitForURL('**/portfolio');
+    await submitTradeAndWaitForPortfolio(page, 'BUY');
     await page.waitForFunction(
       (targetLimitPrice) => {
         const store = window.__ZEROHUE_STORE__;

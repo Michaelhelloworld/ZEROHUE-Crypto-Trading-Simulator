@@ -60,6 +60,7 @@ Public content prerendering is intentionally split from the client route graph: 
 - `src/hooks/usePortfolioManager.ts`: top-line valuation, scoring, and portfolio helpers
 - `src/hooks/useAppInitialization.ts`: hydration, replay gating, and startup stage transitions
 - `src/hooks/useIDBSync.ts`: incremental IndexedDB persistence
+- `src/utils/appInitializationState.ts`: startup state machine (`hydrating`, `hydration_error`, `replay_pending`, `replay_error`, `ready`)
 
 Holdings are modeled as FIFO lots. The portfolio UI aggregates them for readability, but execution, PnL attribution, and scoring remain lot-based.
 
@@ -72,6 +73,15 @@ Holdings are modeled as FIFO lots. The portfolio UI aggregates them for readabil
 Worker isolation is used to keep the main thread responsive during frequent price updates.
 
 ## 5. Core runtime flows
+
+### Startup hydration flow
+
+1. `useAppInitialization` restores `portfolio` from localStorage and `orders` / `transactions` from IndexedDB through `hydratePersistedAppState(...)`.
+2. Hydration normalizes malformed-but-parseable state before it enters the store and can rewrite sanitized state back to browser persistence.
+3. If the restored `portfolio` cannot be trusted as the source of truth, open orders are reconciled and can be cancelled to avoid cash / holdings mismatches.
+4. If `orders` or `transactions` are unavailable from IndexedDB, startup enters `hydration_error` and `TerminalShell` blocks simulator entry.
+5. The startup recovery UI keeps `Retry Hydration` and `Reload App`, and can surface targeted browser-only repair actions or a full local factory reset.
+6. Only after hydration succeeds does initial offline replay begin; the app does not enter the ready stage before both startup phases settle.
 
 ### Market data flow
 
@@ -110,7 +120,10 @@ Worker isolation is used to keep the main thread responsive during frequent pric
 - `portfolio` is stored in localStorage
 - `orders`, `transactions`, and `market_history` are stored in IndexedDB
 - hydration normalizes malformed-but-parseable state before it enters the store
+- hydration can rewrite sanitized `portfolio`, `orders`, and `transactions` back to browser storage
+- fallback or untrusted `portfolio` recovery can trigger open-order reconciliation and cancellation
 - hydration does not recover deprecated order or transaction arrays from localStorage
+- hydration failure for `orders` or `transactions` blocks startup and surfaces recovery actions instead of entering `ready`
 - `src/utils/valuation.ts` is the shared mark-price resolver for equity, portfolio rows, reserved SELL exposure, and scoring
 - `src/utils/scoring.ts` computes risk, profit, stability, and confidence-based totals
 - `scripts/prerender-public-pages.mjs` runs after the production build, server-renders public routes through `renderPublicRoute.tsx`, writes real React HTML into `#root`, and updates route-specific metadata

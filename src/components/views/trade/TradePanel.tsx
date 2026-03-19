@@ -16,9 +16,15 @@ import {
   formatAmount,
   formatAmountInput,
   formatPriceInput,
+  formatPrice,
   formatUsdInput,
   formatUsdWithSymbol,
 } from '../../../utils/format';
+import {
+  getDefaultLimitPriceInput,
+  getDirectionalLimitPriceBounds,
+  isDirectionalLimitPriceValid,
+} from '../../../utils/limitOrderPrice';
 
 interface TradePanelProps {
   coin: Coin;
@@ -49,9 +55,19 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
   } = formState;
 
   const { userHolding, totalCost, buyingPower } = calculations;
+  const directionalLimitBounds = getDirectionalLimitPriceBounds(tradeType, coin.price);
+  const limitPriceMin =
+    tradeType === 'SELL'
+      ? formatPriceInput(directionalLimitBounds.min)
+      : PRICE_INPUT_LIMITS.minText;
+  const limitPriceMax =
+    tradeType === 'BUY' ? formatPriceInput(directionalLimitBounds.max) : PRICE_INPUT_LIMITS.maxText;
+  const limitPriceHint = `${
+    tradeType === 'BUY' ? 'Set below' : 'Set above'
+  } current market: ${formatPrice(coin.price)} USDT`;
   const amountInputMin =
     inputMode === 'AMOUNT' ? CRYPTO_AMOUNT_INPUT_LIMITS.minText : USD_VALUE_INPUT_LIMITS.minText;
-  const amountInputMax = (() => {
+  const amountInputMaxValue = (() => {
     if (inputMode === 'AMOUNT') {
       const maxByPortfolio =
         tradeType === 'BUY'
@@ -59,16 +75,46 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
             ? buyingPower / calculations.executionPrice
             : CRYPTO_AMOUNT_INPUT_LIMITS.max
           : userHolding;
-      return (
-        formatAmountInput(Math.max(0, Math.min(maxByPortfolio, CRYPTO_AMOUNT_INPUT_LIMITS.max))) ||
-        '0'
-      );
+      return Math.max(0, Math.min(maxByPortfolio, CRYPTO_AMOUNT_INPUT_LIMITS.max));
     }
 
     const maxByPortfolio =
       tradeType === 'BUY' ? buyingPower : userHolding * calculations.executionPrice;
-    return formatUsdInput(Math.max(0, Math.min(maxByPortfolio, USD_VALUE_INPUT_LIMITS.max))) || '0';
+    return Math.max(0, Math.min(maxByPortfolio, USD_VALUE_INPUT_LIMITS.max));
   })();
+  const amountInputMax =
+    inputMode === 'AMOUNT'
+      ? formatAmountInput(amountInputMaxValue) || '0'
+      : formatUsdInput(amountInputMaxValue) || '0';
+
+  const clampTradeInputValue = React.useCallback(
+    (rawValue: string) => {
+      if (rawValue === '') return '';
+
+      const parsedValue = Number(rawValue);
+      if (!Number.isFinite(parsedValue)) return rawValue;
+
+      if (parsedValue <= 0 || amountInputMaxValue <= 0) {
+        return rawValue;
+      }
+
+      if (parsedValue > amountInputMaxValue) {
+        return inputMode === 'AMOUNT'
+          ? formatAmountInput(amountInputMaxValue)
+          : formatUsdInput(amountInputMaxValue);
+      }
+
+      return rawValue;
+    },
+    [amountInputMaxValue, inputMode]
+  );
+
+  const handleAmountInputChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      setAmount(clampTradeInputValue(event.target.value));
+    },
+    [clampTradeInputValue, setAmount]
+  );
 
   const availableLabel =
     tradeType === 'BUY'
@@ -78,7 +124,7 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
         : `${formatAmountInput(userHolding) || formatAmount(0)} ${coin.symbol}`;
 
   return (
-    <div className="glass-card p-6 rounded-3xl border border-white/5 flex flex-col relative h-full xl:h-auto">
+    <div className="glass-card w-full min-w-0 overflow-hidden p-6 rounded-3xl border border-white/5 flex flex-col relative h-full xl:h-auto">
       <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-blue-500/5 to-transparent pointer-events-none rounded-t-3xl" />
 
       <div className="relative mb-6">
@@ -97,6 +143,9 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
             aria-label="Select Buy order type"
             onClick={() => {
               setTradeType('BUY');
+              if (orderType === 'LIMIT') {
+                setLimitPrice(getDefaultLimitPriceInput('BUY', coin.price));
+              }
               trigger('medium');
             }}
             className={`flex-1 py-3 rounded-xl text-xs font-black transition-all relative z-10 uppercase tracking-widest ${tradeType === 'BUY' ? 'bg-emerald-500/90 text-white shadow-lg border border-emerald-400/50' : 'text-slate-500 hover:text-slate-300 bg-transparent border border-transparent'}`}
@@ -109,6 +158,9 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
             aria-label="Select Sell order type"
             onClick={() => {
               setTradeType('SELL');
+              if (orderType === 'LIMIT') {
+                setLimitPrice(getDefaultLimitPriceInput('SELL', coin.price));
+              }
               trigger('medium');
             }}
             className={`flex-1 py-3 rounded-xl text-xs font-black transition-all relative z-10 uppercase tracking-widest ${tradeType === 'SELL' ? 'bg-red-500/90 text-white shadow-lg border border-red-400/50' : 'text-slate-500 hover:text-slate-300 bg-transparent border border-transparent'}`}
@@ -145,7 +197,9 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
               aria-label="Limit order - Execute at specific price"
               onClick={() => {
                 setOrderType('LIMIT');
-                if (!limitPrice) setLimitPrice(formatPriceInput(coin.price));
+                if (!isDirectionalLimitPriceValid(tradeType, parseFloat(limitPrice), coin.price)) {
+                  setLimitPrice(getDefaultLimitPriceInput(tradeType, coin.price));
+                }
               }}
               className={`py-2 rounded-lg text-[11px] font-bold transition-all ${
                 orderType === 'LIMIT'
@@ -174,8 +228,8 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
                 <input
                   type="number"
                   step={PRICE_INPUT_LIMITS.step}
-                  min={PRICE_INPUT_LIMITS.minText}
-                  max={PRICE_INPUT_LIMITS.maxText}
+                  min={limitPriceMin}
+                  max={limitPriceMax}
                   aria-label="Limit price input"
                   value={limitPrice}
                   onChange={(e) => setLimitPrice(e.target.value)}
@@ -187,6 +241,7 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
                   USDT
                 </div>
               </div>
+              <p className="px-1 text-[11px] text-slate-500 font-medium">{limitPriceHint}</p>
             </motion.div>
           )}
         </AnimatePresence>
@@ -210,8 +265,8 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
             </button>
           </div>
 
-          <div className="relative flex flex-col gap-1">
-            <div className="flex items-baseline gap-2">
+          <div className="relative flex flex-col gap-1 min-w-0">
+            <div className="relative min-w-0">
               <input
                 type="number"
                 step={
@@ -224,12 +279,12 @@ const TradePanel: React.FC<TradePanelProps> = ({ coin, formState, calculations, 
                 inputMode="decimal"
                 aria-label="Trade amount input"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={handleAmountInputChange}
                 onKeyDown={preventSignedExponentInput}
-                className="w-full bg-transparent text-3xl font-bold font-mono text-white focus:outline-none placeholder:text-slate-800"
+                className="w-full min-w-0 bg-transparent pr-16 text-3xl font-bold font-mono text-white focus:outline-none placeholder:text-slate-800"
                 placeholder={inputMode === 'AMOUNT' ? formatAmount(0) : USD_INPUT_PLACEHOLDER}
               />
-              <span className="text-xs font-black text-slate-400 uppercase shrink-0 transition-colors group-focus-within:text-blue-400">
+              <span className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-xs font-black text-slate-400 uppercase transition-colors group-focus-within:text-blue-400">
                 {inputMode === 'AMOUNT' ? coin.symbol : 'USD'}
               </span>
             </div>

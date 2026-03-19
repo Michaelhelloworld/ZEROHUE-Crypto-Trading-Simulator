@@ -1,17 +1,15 @@
 import { useMemo, useCallback, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { dbService } from '../services/db';
-import {
-  LAST_ONLINE_AT_KEY,
-  LAST_ONLINE_AT_BINANCE_KEY,
-  LAST_ONLINE_AT_COINBASE_KEY,
-} from '../constants/storage';
 import { Coin } from '../types';
 import { useStore } from '../store/useStore';
-import { safeStorage } from '../utils/safeStorage';
 import { formatUsdWithSymbol } from '../utils/format';
 import { applyStrategyToCoinLots, getAggregateHoldingForCoin } from '../utils/lotAccounting';
 import { calculateAccountEquitySnapshot } from '../utils/valuation';
+import {
+  clearLocalSimulatorStorage,
+  writeLocalPortfolioStorage,
+} from '../utils/localSimulatorState';
 
 interface UsePortfolioManagerOptions {
   autoCaptureScoreSnapshots?: boolean;
@@ -37,7 +35,7 @@ export const usePortfolioManager = ({
 
   const handleConfirmReset = useCallback(
     async (amount: number) => {
-      setPortfolio({
+      const resetPortfolio = {
         balance: amount,
         initialBalance: amount,
         holdings: [],
@@ -46,20 +44,21 @@ export const usePortfolioManager = ({
         grossProfit: 0,
         grossLoss: 0,
         validTradesCount: 0,
-      });
-      setTransactions([]);
-      setOrders([]);
-      setIsResetModalOpen(false);
-
-      safeStorage.removeItem('zerohue_transactions');
-      safeStorage.removeItem('zerohue_orders');
-      safeStorage.removeItem(LAST_ONLINE_AT_KEY);
-      safeStorage.removeItem(LAST_ONLINE_AT_BINANCE_KEY);
-      safeStorage.removeItem(LAST_ONLINE_AT_COINBASE_KEY);
+      };
 
       try {
-        await dbService.clear('transactions');
-        await dbService.clear('orders');
+        await dbService.clearSimulatorState();
+        const didClearLocalState = clearLocalSimulatorStorage();
+        const didPersistResetPortfolio = writeLocalPortfolioStorage(resetPortfolio);
+        if (!didClearLocalState || !didPersistResetPortfolio) {
+          throw new Error('local simulator reset persistence failed');
+        }
+
+        setPortfolio(resetPortfolio);
+        setTransactions([]);
+        setOrders([]);
+        setIsResetModalOpen(false);
+
         toast.success(
           `Account reset with ${formatUsdWithSymbol(amount, {
             minimumFractionDigits: 0,
@@ -68,7 +67,7 @@ export const usePortfolioManager = ({
         );
       } catch (e) {
         console.error('Failed to clear IndexedDB on reset', e);
-        toast.success(`Account state reset, but device storage clear failed.`);
+        toast.error('Account reset failed because device storage could not be cleared.');
       }
     },
     [setPortfolio, setTransactions, setOrders, setIsResetModalOpen]

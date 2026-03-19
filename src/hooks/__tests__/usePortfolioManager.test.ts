@@ -7,6 +7,7 @@ import { Coin, Order } from '../../types';
 import { generateUUID } from '../../utils/uuid';
 import * as useStoreModule from '../../store/useStore';
 import { dbService } from '../../services/db';
+import * as localSimulatorStateModule from '../../utils/localSimulatorState';
 
 vi.mock('react-hot-toast', () => ({
   default: { success: vi.fn(), error: vi.fn() },
@@ -14,8 +15,13 @@ vi.mock('react-hot-toast', () => ({
 
 vi.mock('../../services/db', () => ({
   dbService: {
-    clear: vi.fn(),
+    clearSimulatorState: vi.fn(),
   },
+}));
+
+vi.mock('../../utils/localSimulatorState', () => ({
+  clearLocalSimulatorStorage: vi.fn(() => true),
+  writeLocalPortfolioStorage: vi.fn(() => true),
 }));
 
 const createCoin = (overrides: Partial<Coin> = {}): Coin => ({
@@ -46,7 +52,9 @@ describe('usePortfolioManager', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    (dbService.clear as Mock).mockResolvedValue(undefined);
+    (dbService.clearSimulatorState as Mock).mockResolvedValue(undefined);
+    vi.mocked(localSimulatorStateModule.clearLocalSimulatorStorage).mockReturnValue(true);
+    vi.mocked(localSimulatorStateModule.writeLocalPortfolioStorage).mockReturnValue(true);
 
     mockState = {
       coins: [
@@ -178,6 +186,53 @@ describe('usePortfolioManager', () => {
       expect(mockState.setTransactions).toHaveBeenCalledWith([]);
       expect(mockState.setOrders).toHaveBeenCalledWith([]);
       expect(toast.success).toHaveBeenCalledWith('Account reset with $100,000 balance');
+      expect(localSimulatorStateModule.clearLocalSimulatorStorage).toHaveBeenCalledTimes(1);
+      expect(localSimulatorStateModule.writeLocalPortfolioStorage).toHaveBeenCalledWith({
+        balance: 100000,
+        initialBalance: 100000,
+        holdings: [],
+        peakBalance: 100000,
+        historicalMDD: 0,
+        grossProfit: 0,
+        grossLoss: 0,
+        validTradesCount: 0,
+      });
+    });
+
+    it('should keep the current in-memory state when persistent reset fails', async () => {
+      const { result } = renderManager();
+      mockState.isResetModalOpen = true;
+      (dbService.clearSimulatorState as Mock).mockRejectedValueOnce(new Error('clear failed'));
+
+      await act(async () => {
+        await result.current.handleConfirmReset(100000);
+      });
+
+      expect(mockState.setPortfolio).not.toHaveBeenCalled();
+      expect(mockState.setTransactions).not.toHaveBeenCalled();
+      expect(mockState.setOrders).not.toHaveBeenCalled();
+      expect(mockState.setIsResetModalOpen).not.toHaveBeenCalledWith(false);
+      expect(toast.error).toHaveBeenCalledWith(
+        'Account reset failed because device storage could not be cleared.'
+      );
+    });
+
+    it('should keep the current in-memory state when local simulator persistence cannot be rewritten', async () => {
+      const { result } = renderManager();
+      mockState.isResetModalOpen = true;
+      vi.mocked(localSimulatorStateModule.writeLocalPortfolioStorage).mockReturnValueOnce(false);
+
+      await act(async () => {
+        await result.current.handleConfirmReset(100000);
+      });
+
+      expect(mockState.setPortfolio).not.toHaveBeenCalled();
+      expect(mockState.setTransactions).not.toHaveBeenCalled();
+      expect(mockState.setOrders).not.toHaveBeenCalled();
+      expect(mockState.setIsResetModalOpen).not.toHaveBeenCalledWith(false);
+      expect(toast.error).toHaveBeenCalledWith(
+        'Account reset failed because device storage could not be cleared.'
+      );
     });
   });
 

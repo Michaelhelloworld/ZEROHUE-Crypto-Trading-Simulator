@@ -18,6 +18,7 @@ import ZeroHueLogo from '../common/ZeroHueLogo';
 import NavButton from '../common/NavButton';
 import { usePortfolioManager } from '../../hooks/usePortfolioManager';
 import { formatUsdWithSymbol } from '../../utils/format';
+import { normalizePathname } from '../../utils/pathname';
 
 const NAV_ITEMS = [
   {
@@ -54,6 +55,7 @@ const NAV_ITEMS = [
 
 const Sidebar: React.FC = () => {
   const location = useLocation();
+  const pathname = normalizePathname(location.pathname);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const {
     totalEquity,
@@ -72,7 +74,7 @@ const Sidebar: React.FC = () => {
 
   return (
     <aside
-      className={`hidden md:flex flex-col ${isCollapsed ? 'w-24 px-3 py-6 items-center' : 'w-72 p-6'} border-r border-white/5 bg-[#0f172a]/50 backdrop-blur-xl relative z-20 transition-all duration-300`}
+      className={`hidden md:flex flex-col ${isCollapsed ? 'w-24 px-3 py-6 items-center' : 'w-64 px-5 py-6'} border-r border-white/5 bg-[#0f172a]/50 backdrop-blur-xl relative z-20 transition-all duration-300`}
     >
       {/* Toggle Button */}
       <button
@@ -100,7 +102,7 @@ const Sidebar: React.FC = () => {
             {BRAND_NAME}
           </h1>
           {!isCollapsed && (
-            <span className="text-[10px] font-bold text-emerald-500 tracking-wider block mt-1">
+            <span className="mt-1 block whitespace-nowrap text-[10px] font-bold tracking-[0.02em] text-emerald-500">
               {BRAND_SUBTITLE}
             </span>
           )}
@@ -113,7 +115,7 @@ const Sidebar: React.FC = () => {
         className={`space-y-2 flex-1 ${isCollapsed ? 'w-full flex-col items-center space-y-3' : ''}`}
       >
         {NAV_ITEMS.map(({ to, label, icon: Icon }) => {
-          const isActive = location.pathname === to;
+          const isActive = pathname === to;
 
           return (
             <Link

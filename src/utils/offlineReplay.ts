@@ -111,6 +111,9 @@ export const hasStrategy = (holding: Holding) =>
   (holding.takeProfitPrice && holding.takeProfitPrice > 0) ||
   (holding.stopLossPrice && holding.stopLossPrice > 0);
 
+const getReplayFillHoldingId = (orderId: string, executionTime: number) =>
+  `replay-fill:${orderId}:${executionTime}`;
+
 export const createHoldingFromFilledBuy = (
   order: Order,
   executionPrice: number,
@@ -120,6 +123,7 @@ export const createHoldingFromFilledBuy = (
   const effectiveAmount = order.amount * (1 - TRADING_FEE_RATE);
 
   return createHoldingLot({
+    id: getReplayFillHoldingId(order.id, executionTime),
     coinId: order.coinId,
     amount: roundCrypto(effectiveAmount),
     averageCost: roundPrice(executionPrice / (1 - TRADING_FEE_RATE)),
@@ -778,7 +782,7 @@ export const applyReplayEventsToState = (
   coins: Coin[]
 ) => {
   const nextOrders = [...currentOrders];
-  const nextPortfolio = { ...currentPortfolio, holdings: [...currentPortfolio.holdings] };
+  let nextPortfolio = { ...currentPortfolio, holdings: [...currentPortfolio.holdings] };
   const newTransactions: Transaction[] = [];
   let filledCount = 0;
   let triggeredHoldingCount = 0;
@@ -809,94 +813,30 @@ export const applyReplayEventsToState = (
     }
 
     if (event.type === 'FILL') {
-      const orderIndex = nextOrders.findIndex((order) => order.id === event.order.id);
-      if (orderIndex < 0) continue;
+      const portfolioUpdates: Array<(prev: Portfolio) => Portfolio> = [];
+      const fillResult = processFilledOrder(
+        event.order,
+        event.executionPrice,
+        event.executionTime,
+        nextOrders,
+        newTransactions,
+        portfolioUpdates,
+        coins
+      );
 
-      const order = nextOrders[orderIndex];
-      if (order.status !== 'OPEN') continue;
-      if (order.type === 'SELL' && !hasExecutableLotAllocations(order)) {
-        nextOrders[orderIndex] = {
-          ...order,
-          status: 'CANCELLED',
-          amount: 0,
-          total: 0,
-          lotAllocations: [],
-          updatedAt: event.executionTime,
-        };
+      if (fillResult === 'SKIPPED') {
+        continue;
+      }
+
+      if (fillResult === 'CANCELLED') {
         cancelledCount += 1;
         continue;
       }
 
-      const totalValue = roundUSD(order.amount * event.executionPrice);
-      const fee = roundUSD(totalValue * TRADING_FEE_RATE);
-
-      newTransactions.push({
-        id: generateUUID(),
-        type: order.type,
-        coinId: order.coinId,
-        coinSymbol: order.coinSymbol,
-        amount: order.amount,
-        pricePerCoin: event.executionPrice,
-        total: totalValue,
-        fee,
-        timestamp: event.executionTime,
-        updatedAt: event.executionTime,
-      });
-
-      if (order.type === 'BUY') {
-        const ordersBeforeFill = nextOrders.map((candidate, index) =>
-          index === orderIndex ? order : candidate
-        );
-        const lockedAmount = order.total;
-        const actualCost = totalValue;
-        if (lockedAmount > actualCost) {
-          nextPortfolio.balance = roundUSD(nextPortfolio.balance + (lockedAmount - actualCost));
-        }
-
-        const totalEquity = calculateTotalEquityWithOverrides(
-          nextPortfolio,
-          coins,
-          ordersBeforeFill,
-          { [order.coinId]: event.executionPrice }
-        );
-        const isBigEnough = actualCost >= totalEquity * 0.05;
-        nextPortfolio.holdings.push(
-          createHoldingFromFilledBuy(order, event.executionPrice, event.executionTime, isBigEnough)
-        );
-      } else {
-        nextOrders[orderIndex] = {
-          ...order,
-          status: 'FILLED',
-          updatedAt: event.executionTime,
-        };
-
-        const proceeds = roundUSD(totalValue * (1 - TRADING_FEE_RATE));
-        const lotAllocations = order.lotAllocations || [];
-        const costBasis =
-          lotAllocations.length > 0
-            ? getAllocationsCostBasis(lotAllocations)
-            : order.amount * event.executionPrice;
-        const realizedPnL = proceeds - costBasis;
-
-        let newGrossProfit = nextPortfolio.grossProfit || 0;
-        let newGrossLoss = nextPortfolio.grossLoss || 0;
-        if (realizedPnL > 0) newGrossProfit += realizedPnL;
-        if (realizedPnL < 0) newGrossLoss += Math.abs(realizedPnL);
-
-        let newValidCount = nextPortfolio.validTradesCount || 0;
-        newValidCount += countValidTradesFromAllocations(
-          lotAllocations,
-          event.executionTime,
-          nextPortfolio.holdings,
-          nextOrders
-        );
-
-        nextPortfolio.grossProfit = newGrossProfit;
-        nextPortfolio.grossLoss = newGrossLoss;
-        nextPortfolio.validTradesCount = newValidCount;
-
-        nextPortfolio.balance = roundUSD(nextPortfolio.balance + proceeds);
+      for (const applyPortfolioUpdate of portfolioUpdates) {
+        nextPortfolio = applyPortfolioUpdate(nextPortfolio);
       }
+
       filledCount += 1;
       continue;
     }

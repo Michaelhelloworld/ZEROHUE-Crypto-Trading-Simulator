@@ -5,6 +5,7 @@ import {
   gotoTrade,
   seedAcceptedDisclaimer,
   setCoinPrice,
+  submitTradeAndWaitForPortfolio,
 } from './helpers/terminal';
 
 test.describe('ZEROHUE trade resilience', () => {
@@ -108,9 +109,7 @@ test.describe('ZEROHUE trade resilience', () => {
     await gotoTrade(page, 'hyperliquid');
     await setCoinPrice(page, 'hyperliquid', 25);
     await page.getByLabel('Trade amount input').fill('2');
-    await page.getByRole('button', { name: /Confirm BUY/i }).click();
-
-    await page.waitForURL('**/portfolio');
+    await submitTradeAndWaitForPortfolio(page, 'BUY');
     await page.waitForFunction(() => {
       const store = window.__ZEROHUE_STORE__;
       if (!store) return false;

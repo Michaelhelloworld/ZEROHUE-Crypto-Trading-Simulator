@@ -1,5 +1,19 @@
 import { useEffect, useRef } from 'react';
 import { dbService, ZEROHUESchema } from '../services/db';
+import {
+  PersistenceTrackedStoreName,
+  usePersistenceSyncStore,
+} from '../store/usePersistenceSyncStore';
+
+const INITIAL_SYNC_DELAY_MS = 100;
+const BASE_RETRY_SYNC_DELAY_MS = 1000;
+const MAX_RETRY_SYNC_DELAY_MS = 8000;
+const MAX_CONSECUTIVE_SYNC_FAILURES = 5;
+
+const isTrackedPersistenceStore = (
+  storeName: keyof ZEROHUESchema
+): storeName is PersistenceTrackedStoreName =>
+  storeName === 'orders' || storeName === 'transactions';
 
 /**
  * A pure side-effect hook that observes a data array and incrementally syncs
@@ -13,6 +27,10 @@ export function useIDBSync<K extends keyof ZEROHUESchema>(
 ) {
   const previousIsHydrated = useRef(isHydrated);
   const previousDataRef = useRef<ZEROHUESchema[K]['value'][]>([]);
+  const consecutiveFailureCountRef = useRef(0);
+  const markStoreHealthy = usePersistenceSyncStore((state) => state.markStoreHealthy);
+  const markStoreRetrying = usePersistenceSyncStore((state) => state.markStoreRetrying);
+  const markStoreDegraded = usePersistenceSyncStore((state) => state.markStoreDegraded);
 
   useEffect(() => {
     // 1. Transition: Just became hydrated.
@@ -24,10 +42,32 @@ export function useIDBSync<K extends keyof ZEROHUESchema>(
       return;
     }
 
-    // 2. Regular Sync Logic
-    if (!isHydrated) return;
+    // 2. Reset the hydration transition marker whenever initialization drops
+    // back out of the hydrated state (for example, Retry Hydration).
+    if (!isHydrated) {
+      previousIsHydrated.current = false;
+      return;
+    }
+
+    const trackedStoreName = isTrackedPersistenceStore(storeName) ? storeName : null;
+    let isCancelled = false;
+    let syncTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleSync = (delayMs: number) => {
+      if (isCancelled) return;
+      if (syncTimer) {
+        clearTimeout(syncTimer);
+      }
+
+      syncTimer = setTimeout(() => {
+        syncTimer = null;
+        void syncToDB();
+      }, delayMs);
+    };
 
     const syncToDB = async () => {
+      if (isCancelled) return;
+
       const prevData = previousDataRef.current;
       const currentData = data;
 
@@ -96,6 +136,11 @@ export function useIDBSync<K extends keyof ZEROHUESchema>(
         if (toDelete.length > 0) {
           await dbService.bulkDelete(storeName, toDelete);
         }
+
+        consecutiveFailureCountRef.current = 0;
+        if (trackedStoreName) {
+          markStoreHealthy(trackedStoreName);
+        }
       } catch (err) {
         console.error(`Failed to incremental sync ${storeName} to IDB`, err);
         // Rollback on failure: if no other sync has moved the ref forward since we started,
@@ -103,11 +148,46 @@ export function useIDBSync<K extends keyof ZEROHUESchema>(
         if (previousDataRef.current === snapshotValue) {
           previousDataRef.current = rollbackValue;
         }
+
+        consecutiveFailureCountRef.current += 1;
+        const failureCount = consecutiveFailureCountRef.current;
+        const nextRetryDelay = Math.min(
+          BASE_RETRY_SYNC_DELAY_MS * 2 ** (failureCount - 1),
+          MAX_RETRY_SYNC_DELAY_MS
+        );
+        const isDegraded = failureCount >= MAX_CONSECUTIVE_SYNC_FAILURES;
+
+        if (trackedStoreName) {
+          const storeLabel = trackedStoreName === 'orders' ? 'orders' : 'transaction history';
+          if (isDegraded) {
+            markStoreDegraded(
+              trackedStoreName,
+              failureCount,
+              `Local ${storeLabel} persistence is unavailable. Recent changes may not survive a refresh until browser storage recovers.`
+            );
+          } else {
+            markStoreRetrying(
+              trackedStoreName,
+              failureCount,
+              Date.now() + nextRetryDelay,
+              `Retrying local ${storeLabel} persistence in ${Math.round(nextRetryDelay / 1000)}s. Avoid refreshing until this clears.`
+            );
+          }
+        }
+
+        if (!isDegraded) {
+          scheduleSync(nextRetryDelay);
+        }
       }
     };
 
     // Use requestIdleCallback or setTimeout to yield to UI thread if we are syncing large arrays
-    const timer = setTimeout(syncToDB, 100);
-    return () => clearTimeout(timer);
-  }, [data, isHydrated, storeName]);
+    scheduleSync(INITIAL_SYNC_DELAY_MS);
+    return () => {
+      isCancelled = true;
+      if (syncTimer) {
+        clearTimeout(syncTimer);
+      }
+    };
+  }, [data, isHydrated, markStoreDegraded, markStoreHealthy, markStoreRetrying, storeName]);
 }

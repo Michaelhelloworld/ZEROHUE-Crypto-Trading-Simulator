@@ -1,7 +1,7 @@
 import { dbService, ZEROHUESchema } from '../services/db';
 import { DEFAULT_PORTFOLIO } from '../store/useStore';
 import { Holding, Order, OrderLotAllocation, Portfolio, Transaction } from '../types';
-import { isDust } from './math';
+import { isDust, roundCrypto, roundUSD } from './math';
 import { generateUUID } from './uuid';
 import { safeStorage } from './safeStorage';
 
@@ -13,6 +13,16 @@ interface NormalizationResult<T> {
 interface NullableNormalizationResult<T> {
   value: T | null;
   dirty: boolean;
+}
+
+export class PersistedAppHydrationError extends Error {
+  code: 'orders_unavailable' | 'transactions_unavailable';
+
+  constructor(message: string, code: 'orders_unavailable' | 'transactions_unavailable') {
+    super(message);
+    this.name = 'PersistedAppHydrationError';
+    this.code = code;
+  }
 }
 
 const sortByNewestFirst = <T extends { timestamp: number }>(items: T[]) =>
@@ -265,10 +275,41 @@ const normalizePortfolioResult = (value: unknown): NormalizationResult<Portfolio
 export const normalizePortfolio = (value: unknown): Portfolio =>
   normalizePortfolioResult(value).value;
 
+const hasTrustedHoldingIds = (rawHoldings: unknown, normalizedHoldings: Holding[]) => {
+  if (!Array.isArray(rawHoldings) || rawHoldings.length !== normalizedHoldings.length) {
+    return false;
+  }
+
+  const rawIds = rawHoldings.map((holding) =>
+    holding && typeof holding === 'object' ? (holding as Record<string, unknown>).id : undefined
+  );
+  if (!rawIds.every((id) => isNonEmptyString(id))) {
+    return false;
+  }
+
+  return new Set(rawIds as string[]).size === rawIds.length;
+};
+
+const requiresOpenOrderReconciliation = (rawPortfolio: unknown, normalizedPortfolio: Portfolio) => {
+  if (!rawPortfolio || typeof rawPortfolio !== 'object') {
+    return true;
+  }
+
+  const candidate = rawPortfolio as Record<string, unknown>;
+  const hasTrustedBalances =
+    isNonNegativeFiniteNumber(candidate.balance) &&
+    isNonNegativeFiniteNumber(candidate.initialBalance);
+  const rawHoldings = candidate.holdings;
+  const hasTrustedHoldings = hasTrustedHoldingIds(rawHoldings, normalizedPortfolio.holdings);
+
+  return !hasTrustedBalances || !hasTrustedHoldings;
+};
+
 const normalizeOrder = (value: unknown): NullableNormalizationResult<Order> => {
   if (!value || typeof value !== 'object') return { value: null, dirty: true };
 
   const candidate = value as Record<string, unknown>;
+  const status = candidate.status;
   let dirty = !hasOnlyKnownKeys(candidate, [
     'id',
     'type',
@@ -292,16 +333,21 @@ const normalizeOrder = (value: unknown): NullableNormalizationResult<Order> => {
     return { value: null, dirty: true };
   }
   if (candidate.type !== 'BUY' && candidate.type !== 'SELL') return { value: null, dirty: true };
-  if (!isPositiveFiniteNumber(candidate.amount)) return { value: null, dirty: true };
   if (!isPositiveFiniteNumber(candidate.limitPrice)) return { value: null, dirty: true };
-  if (!isPositiveFiniteNumber(candidate.total)) return { value: null, dirty: true };
-  if (
-    candidate.status !== 'OPEN' &&
-    candidate.status !== 'FILLED' &&
-    candidate.status !== 'CANCELLED'
-  ) {
+  if (status !== 'OPEN' && status !== 'FILLED' && status !== 'CANCELLED') {
     return { value: null, dirty: true };
   }
+
+  const allowsZeroSizedCancellation = status === 'CANCELLED';
+  const hasValidAmount = allowsZeroSizedCancellation
+    ? isNonNegativeFiniteNumber(candidate.amount)
+    : isPositiveFiniteNumber(candidate.amount);
+  const hasValidTotal = allowsZeroSizedCancellation
+    ? isNonNegativeFiniteNumber(candidate.total)
+    : isPositiveFiniteNumber(candidate.total);
+
+  if (!hasValidAmount) return { value: null, dirty: true };
+  if (!hasValidTotal) return { value: null, dirty: true };
 
   const timestamp = normalizeOptionalPositiveInteger(candidate, 'timestamp');
   if (!timestamp.value) return { value: null, dirty: true };
@@ -319,11 +365,44 @@ const normalizeOrder = (value: unknown): NullableNormalizationResult<Order> => {
 
   if (
     candidate.type === 'SELL' &&
-    candidate.status === 'OPEN' &&
+    status === 'OPEN' &&
     (!normalizedLotAllocations || normalizedLotAllocations.length === 0)
   ) {
     return { value: null, dirty: true };
   }
+
+  const normalizedSellAmount =
+    candidate.type === 'SELL' && normalizedLotAllocations
+      ? roundCrypto(
+          normalizedLotAllocations.reduce((acc, allocation) => acc + allocation.amount, 0)
+        )
+      : null;
+  const normalizedSellTotal =
+    candidate.type === 'SELL' && normalizedSellAmount !== null
+      ? roundUSD(normalizedSellAmount * candidate.limitPrice)
+      : null;
+  if (
+    candidate.type === 'SELL' &&
+    status === 'OPEN' &&
+    normalizedSellAmount !== null &&
+    normalizedSellTotal !== null
+  ) {
+    dirty ||= normalizedSellAmount !== candidate.amount || normalizedSellTotal !== candidate.total;
+  }
+  const normalizedOrderAmount =
+    candidate.type === 'SELL' &&
+    status === 'OPEN' &&
+    normalizedSellAmount !== null &&
+    normalizedSellTotal !== null
+      ? normalizedSellAmount
+      : (candidate.amount as number);
+  const normalizedOrderTotal =
+    candidate.type === 'SELL' &&
+    status === 'OPEN' &&
+    normalizedSellAmount !== null &&
+    normalizedSellTotal !== null
+      ? normalizedSellTotal
+      : (candidate.total as number);
 
   const takeProfitPrice = normalizeOptionalPositiveFiniteNumber(candidate, 'takeProfitPrice');
   const stopLossPrice = normalizeOptionalPositiveFiniteNumber(candidate, 'stopLossPrice');
@@ -336,14 +415,14 @@ const normalizeOrder = (value: unknown): NullableNormalizationResult<Order> => {
       type: candidate.type,
       coinId: candidate.coinId,
       coinSymbol: candidate.coinSymbol,
-      amount: candidate.amount,
+      amount: normalizedOrderAmount,
       limitPrice: candidate.limitPrice,
-      total: candidate.total,
+      total: normalizedOrderTotal,
       takeProfitPrice: takeProfitPrice.value,
       stopLossPrice: stopLossPrice.value,
       lotAllocations: normalizedLotAllocations,
       timestamp: timestamp.value,
-      status: candidate.status,
+      status,
       updatedAt: updatedAt.value,
     },
     dirty,
@@ -445,22 +524,44 @@ const normalizePersistedArray = <T extends 'orders' | 'transactions'>(
 export const hydrateIDBArray = async <T extends 'orders' | 'transactions'>(
   storeName: T,
   onHydrated: (items: ZEROHUESchema[T]['value'][]) => void
-): Promise<ZEROHUESchema[T]['value'][] | null> => {
+): Promise<{ items: ZEROHUESchema[T]['value'][]; failed: boolean }> => {
   try {
     const rawItems = await dbService.getAll(storeName);
     const { value: items, dirty } = normalizePersistedArray(storeName, rawItems);
 
-    if (items.length > 0) onHydrated(items);
+    onHydrated(items);
     if (dirty) {
       await dbService.replaceAll(storeName, items).catch((error) => {
         console.error(`Failed to rewrite sanitized ${storeName} in IndexedDB`, error);
       });
     }
-    return items;
+    return { items, failed: false };
   } catch (error) {
     console.error(`Failed to hydrate ${storeName} from IndexedDB`, error);
-    return null;
+    return { items: [], failed: true };
   }
+};
+
+const reconcileOpenOrdersForFallbackPortfolio = (orders: Order[]): NormalizationResult<Order[]> => {
+  const updatedAt = Date.now();
+  let dirty = false;
+
+  return {
+    value: orders.map((order) => {
+      if (order.status !== 'OPEN') return order;
+
+      dirty = true;
+      return {
+        ...order,
+        status: 'CANCELLED',
+        amount: 0,
+        total: 0,
+        lotAllocations: [],
+        updatedAt,
+      };
+    }),
+    dirty,
+  };
 };
 
 export const hydratePersistedAppState = async ({
@@ -477,9 +578,15 @@ export const hydratePersistedAppState = async ({
   });
 
   const storedPortfolio = safeStorage.getItem('zerohue_portfolio');
+  let shouldReconcileOpenOrders = false;
   if (storedPortfolio) {
     try {
-      const normalizedPortfolio = normalizePortfolioResult(JSON.parse(storedPortfolio));
+      const parsedPortfolio = JSON.parse(storedPortfolio);
+      const normalizedPortfolio = normalizePortfolioResult(parsedPortfolio);
+      shouldReconcileOpenOrders = requiresOpenOrderReconciliation(
+        parsedPortfolio,
+        normalizedPortfolio.value
+      );
       applyPortfolio(normalizedPortfolio.value);
       if (normalizedPortfolio.dirty) {
         safeStorage.setItem('zerohue_portfolio', JSON.stringify(normalizedPortfolio.value));
@@ -487,13 +594,43 @@ export const hydratePersistedAppState = async ({
     } catch (error) {
       console.error('Failed to parse portfolio', error);
       const fallbackPortfolio = createDefaultPortfolio();
+      shouldReconcileOpenOrders = true;
       applyPortfolio(fallbackPortfolio);
       safeStorage.setItem('zerohue_portfolio', JSON.stringify(fallbackPortfolio));
     }
   } else {
+    shouldReconcileOpenOrders = true;
     applyPortfolio(createDefaultPortfolio());
   }
 
-  await hydrateIDBArray('orders', applyOrders);
-  await hydrateIDBArray('transactions', applyTransactions);
+  const hydratedOrdersResult = await hydrateIDBArray('orders', applyOrders);
+  if (hydratedOrdersResult.failed) {
+    throw new PersistedAppHydrationError(
+      'Failed to hydrate open orders from IndexedDB. Startup was blocked to avoid a split portfolio and order state.',
+      'orders_unavailable'
+    );
+  }
+
+  const hydratedOrders = hydratedOrdersResult.items;
+  if (shouldReconcileOpenOrders) {
+    const reconciledOrders = reconcileOpenOrdersForFallbackPortfolio(hydratedOrders);
+
+    if (reconciledOrders.dirty) {
+      console.warn(
+        'Recovered portfolio state could not safely preserve open orders. Open orders were cancelled to avoid cash and holdings mismatches.'
+      );
+      applyOrders(reconciledOrders.value);
+      await dbService.replaceAll('orders', reconciledOrders.value).catch((error) => {
+        console.error('Failed to rewrite reconciled orders after portfolio fallback', error);
+      });
+    }
+  }
+
+  const hydratedTransactionsResult = await hydrateIDBArray('transactions', applyTransactions);
+  if (hydratedTransactionsResult.failed) {
+    throw new PersistedAppHydrationError(
+      'Failed to hydrate transaction history from IndexedDB. Startup was blocked because restored history and scoring data would be incomplete.',
+      'transactions_unavailable'
+    );
+  }
 };

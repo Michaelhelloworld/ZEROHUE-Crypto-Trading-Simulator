@@ -23,11 +23,13 @@ const mockDB = {
   put: vi.fn().mockResolvedValue('key'),
   delete: vi.fn().mockResolvedValue(undefined),
   clear: vi.fn().mockResolvedValue(undefined),
+  close: vi.fn(),
   transaction: vi.fn().mockReturnValue(mockTx),
 };
 
 vi.mock('idb', () => ({
   openDB: vi.fn().mockImplementation(() => Promise.resolve(mockDB)),
+  deleteDB: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('dbService', () => {
@@ -95,6 +97,23 @@ describe('dbService', () => {
     it('should clear store', async () => {
       await dbService.clear('orders');
       expect(mockDB.clear).toHaveBeenCalledWith('orders');
+    });
+
+    it('should clear simulator state in a single multi-store transaction', async () => {
+      await dbService.clearSimulatorState();
+
+      expect(mockDB.transaction).toHaveBeenCalledWith(['orders', 'transactions'], 'readwrite');
+      expect(mockTx.objectStore).toHaveBeenCalledWith('orders');
+      expect(mockTx.objectStore).toHaveBeenCalledWith('transactions');
+      expect(mockStore.clear).toHaveBeenCalledTimes(2);
+    });
+
+    it('should reset local persistence by closing and deleting the database', async () => {
+      await dbService.getAll('orders');
+      await dbService.resetLocalPersistence();
+
+      expect(mockDB.close).toHaveBeenCalledTimes(1);
+      expect(idb.deleteDB).toHaveBeenCalledWith('zerohue_db');
     });
   });
 

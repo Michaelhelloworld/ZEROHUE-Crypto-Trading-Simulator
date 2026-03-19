@@ -215,7 +215,7 @@ const TradeView: React.FC = () => {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-1 xl:grid-cols-4 xl:grid-rows-1 gap-4 md:gap-6 md:h-auto">
+      <div className="grid min-w-0 grid-cols-1 md:grid-cols-1 xl:grid-cols-4 xl:grid-rows-1 gap-4 md:gap-6 md:h-auto">
         {/* Left: Chart Container */}
         <div
           className={`${mobileView === 'CHART' ? 'flex' : 'hidden'} md:flex xl:col-span-3 glass rounded-3xl overflow-hidden border border-white/5 flex-col relative group h-[50vh] md:h-[500px] xl:h-[750px]`}
@@ -227,7 +227,7 @@ const TradeView: React.FC = () => {
 
         {/* Right: Trade Panel */}
         <div
-          className={`${mobileView === 'TRADE' ? 'flex' : 'hidden'} md:flex xl:col-span-1 min-h-[500px] md:h-auto xl:h-auto`}
+          className={`${mobileView === 'TRADE' ? 'flex' : 'hidden'} min-w-0 md:flex xl:col-span-1 min-h-[500px] md:h-auto xl:h-auto`}
         >
           <TradePanel
             coin={coin}

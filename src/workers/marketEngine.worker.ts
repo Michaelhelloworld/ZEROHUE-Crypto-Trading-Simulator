@@ -38,11 +38,8 @@ export const processTick = (payload: EngineInput['payload']): EngineOutput['payl
 
   const newTransactions: Transaction[] = [];
   const notifications: EngineNotification[] = [];
-
+  const newlyOpenedHoldingIds = new Set<string>();
   const openOrders = nextOrders.filter((order) => order.status === 'OPEN');
-
-  // Calculate current total equity for volume threshold checks
-  const totalEquity = calculateLiveTotalEquity(portfolio, coins, openOrders);
 
   // --- ORDER MATCHING ---
   openOrders.forEach((order) => {
@@ -109,18 +106,22 @@ export const processTick = (payload: EngineInput['payload']): EngineOutput['payl
         }
 
         const effectiveAmount = order.amount * (1 - TRADING_FEE_RATE);
-        const isBigEnough = actualCost >= totalEquity * 0.05;
-        nextPortfolio.holdings.push(
-          createHoldingLot({
-            coinId: order.coinId,
-            amount: effectiveAmount,
-            averageCost: roundPrice(executionPrice / (1 - TRADING_FEE_RATE)),
-            takeProfitPrice: order.takeProfitPrice,
-            stopLossPrice: order.stopLossPrice,
-            openedAt: Date.now(),
-            meetsVolumeCondition: isBigEnough,
-          })
+        const openOrdersBeforeFill = nextOrders.map((candidate, index) =>
+          index === orderIndex ? order : candidate
         );
+        const totalEquity = calculateLiveTotalEquity(nextPortfolio, coins, openOrdersBeforeFill);
+        const isBigEnough = actualCost >= totalEquity * 0.05;
+        const nextHolding = createHoldingLot({
+          coinId: order.coinId,
+          amount: effectiveAmount,
+          averageCost: roundPrice(executionPrice / (1 - TRADING_FEE_RATE)),
+          takeProfitPrice: order.takeProfitPrice,
+          stopLossPrice: order.stopLossPrice,
+          openedAt: Date.now(),
+          meetsVolumeCondition: isBigEnough,
+        });
+        nextPortfolio.holdings.push(nextHolding);
+        newlyOpenedHoldingIds.add(nextHolding.id!);
       } else {
         // Sell Order
         const proceeds = roundUSD(totalValue * (1 - TRADING_FEE_RATE));
@@ -287,6 +288,7 @@ export const processTick = (payload: EngineInput['payload']): EngineOutput['payl
   currentHoldings.forEach((h) => {
     // Ignore zero-amount (dust) holdings to avoid false reverse TP/SL triggers while collateral is locked
     if (isDust(h.amount)) return;
+    if (h.id && newlyOpenedHoldingIds.has(h.id)) return;
 
     const coin = coins.find((c) => c.id === h.coinId);
     if (!coin || coin.price <= 0) return;

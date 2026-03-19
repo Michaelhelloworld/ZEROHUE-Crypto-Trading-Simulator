@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Coin, Portfolio } from '../types';
 import toast from 'react-hot-toast';
 
@@ -9,7 +9,6 @@ import {
   AMOUNT_DECIMALS,
   USD_DECIMALS,
   formatAmountInput,
-  formatPriceInput,
   formatUsdInput,
   formatUsdWithSymbol,
 } from '../utils/format';
@@ -22,6 +21,11 @@ import {
   describeUsdInputRange,
   isWithinInclusiveRange,
 } from '../utils/inputConstraints';
+import {
+  getDefaultLimitPriceInput,
+  getDirectionalLimitPriceError,
+  isDirectionalLimitPriceValid,
+} from '../utils/limitOrderPrice';
 
 interface UseTradeFormProps {
   coin: Coin | null;
@@ -71,7 +75,9 @@ export const useTradeForm = ({ coin, portfolio, onExecuteTrade, onClose }: UseTr
   const [amount, setAmount] = useState<string>('');
   const [tradeType, setTradeType] = useState<'BUY' | 'SELL'>('BUY');
   const [orderType, setOrderType] = useState<'MARKET' | 'LIMIT'>('MARKET');
-  const [limitPrice, setLimitPrice] = useState<string>(formatPriceInput(coin?.price || 0));
+  const [limitPrice, setLimitPrice] = useState<string>(
+    getDefaultLimitPriceInput('BUY', coin?.price || 0)
+  );
   const [inputMode, setInputMode] = useState<'AMOUNT' | 'TOTAL'>('AMOUNT');
   const [takeProfit, setTakeProfit] = useState<string>('');
   const [stopLoss, setStopLoss] = useState<string>('');
@@ -164,6 +170,16 @@ export const useTradeForm = ({ coin, portfolio, onExecuteTrade, onClose }: UseTr
   // Use a sync ref lock because React's setState (isLoading) is async
   // and can't prevent double-clicks in the same event loop tick.
   const isSubmittingRef = React.useRef(false);
+  const submitTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearPendingSubmit = React.useCallback(() => {
+    if (!submitTimeoutRef.current) return;
+    clearTimeout(submitTimeoutRef.current);
+    submitTimeoutRef.current = null;
+    isSubmittingRef.current = false;
+  }, []);
+
+  useEffect(() => clearPendingSubmit, [clearPendingSubmit]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -206,6 +222,14 @@ export const useTradeForm = ({ coin, portfolio, onExecuteTrade, onClose }: UseTr
           ? `Limit price must be within ${describePriceInputRange()}.`
           : 'Market price is currently unavailable. Please wait for live data.'
       );
+      return;
+    }
+
+    if (
+      orderType === 'LIMIT' &&
+      !isDirectionalLimitPriceValid(tradeType, executionPrice, coin.price)
+    ) {
+      setError(getDirectionalLimitPriceError(tradeType, coin.price));
       return;
     }
 
@@ -280,7 +304,8 @@ export const useTradeForm = ({ coin, portfolio, onExecuteTrade, onClose }: UseTr
     setIsLoading(true);
     isSubmittingRef.current = true;
 
-    setTimeout(() => {
+    submitTimeoutRef.current = setTimeout(() => {
+      submitTimeoutRef.current = null;
       const success = onExecuteTrade(
         coin.id,
         tradeType,

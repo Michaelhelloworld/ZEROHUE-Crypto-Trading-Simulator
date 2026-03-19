@@ -60,6 +60,23 @@ describe('useSEO', () => {
     );
   });
 
+  it('strips query parameters from canonical urls', () => {
+    render(
+      <MemoryRouter initialEntries={['/learn?utm_source=launch&ref=campaign']}>
+        <SEOHarness fullTitle="Learn Crypto Paper Trading | ZEROHUE" description="Learn page." />
+      </MemoryRouter>
+    );
+
+    expect(document.querySelector('meta[property="og:url"]')).toHaveAttribute(
+      'content',
+      'https://zerohue.org/learn'
+    );
+    expect(document.querySelector('link[rel="canonical"]')).toHaveAttribute(
+      'href',
+      'https://zerohue.org/learn'
+    );
+  });
+
   it('injects route-scoped structured data when provided', () => {
     render(
       <MemoryRouter initialEntries={['/glossary/paper-trading']}>

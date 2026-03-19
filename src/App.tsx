@@ -3,6 +3,7 @@ import { Toaster } from 'react-hot-toast';
 import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router';
 import DisclaimerModal from './components/modals/DisclaimerModal';
 import PublicContentLayout from './components/layout/PublicContentLayout';
+import { normalizePathname } from './utils/pathname';
 import { safeStorage } from './utils/safeStorage';
 
 const IntroView = React.lazy(() => import('./components/views/IntroView'));
@@ -53,7 +54,7 @@ const AppRoutes: React.FC<{
   onAcceptDisclaimer: () => void;
 }> = ({ showDisclaimer, onAcceptDisclaimer }) => {
   const location = useLocation();
-  const pathname = location.pathname;
+  const pathname = normalizePathname(location.pathname);
   const terminalRoute = isTerminalPath(pathname);
   const publicRoute = isPublicContentPath(pathname) || !terminalRoute;
 

@@ -52,4 +52,17 @@ describe('MobileNav', () => {
 
     expect(trigger).toHaveBeenCalledWith('light');
   });
+
+  it('keeps the current tab active when the URL has a trailing slash', () => {
+    render(
+      <MemoryRouter initialEntries={['/portfolio/']}>
+        <MobileNav />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole('link', { name: /portfolio/i })).toHaveAttribute(
+      'aria-current',
+      'page'
+    );
+  });
 });

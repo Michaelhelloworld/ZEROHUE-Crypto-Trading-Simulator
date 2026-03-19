@@ -65,9 +65,9 @@ describe('useTradeForm', () => {
       expect(result.current.formState.isLoading).toBe(false);
     });
 
-    it('should set limit price to coin price initially', () => {
+    it('should initialize BUY limit price below the current market price', () => {
       const { result } = renderFormHook();
-      expect(result.current.formState.limitPrice).toBe('50000.00');
+      expect(result.current.formState.limitPrice).toBe('49999.99');
     });
   });
 
@@ -194,6 +194,46 @@ describe('useTradeForm', () => {
       });
 
       expect(result.current.formState.error).toBe('Please enter a valid limit price.');
+    });
+
+    it('should reject BUY limit prices at or above the current market price', async () => {
+      const { result } = renderFormHook();
+
+      act(() => {
+        result.current.formState.setOrderType('LIMIT');
+        result.current.formState.setAmount('0.1');
+        result.current.formState.setLimitPrice('50000');
+      });
+
+      await act(async () => {
+        result.current.handleSubmit({ preventDefault: vi.fn() } as unknown as React.FormEvent);
+      });
+
+      expect(result.current.formState.error).toBe(
+        'Limit price must stay below the current market price (50,000.00 USDT).'
+      );
+      expect(onExecuteTrade).not.toHaveBeenCalled();
+    });
+
+    it('should reject SELL limit prices at or below the current market price', async () => {
+      portfolio.holdings = [{ coinId: 'bitcoin', amount: 1, averageCost: 45000 }];
+      const { result } = renderFormHook();
+
+      act(() => {
+        result.current.formState.setTradeType('SELL');
+        result.current.formState.setOrderType('LIMIT');
+        result.current.formState.setAmount('0.1');
+        result.current.formState.setLimitPrice('49999');
+      });
+
+      await act(async () => {
+        result.current.handleSubmit({ preventDefault: vi.fn() } as unknown as React.FormEvent);
+      });
+
+      expect(result.current.formState.error).toBe(
+        'Limit price must stay above the current market price (50,000.00 USDT).'
+      );
+      expect(onExecuteTrade).not.toHaveBeenCalled();
     });
 
     it('allows TOTAL-mode BUY orders for low-priced coins when the derived amount remains within the supported range', async () => {
@@ -340,6 +380,33 @@ describe('useTradeForm', () => {
     it('should return 0 for no holdings', () => {
       const { result } = renderFormHook();
       expect(result.current.calculations.userHolding).toBe(0);
+    });
+  });
+
+  describe('Submission lifecycle', () => {
+    it('cancels a delayed submission when the trade form unmounts before execution', async () => {
+      vi.useFakeTimers();
+      onExecuteTrade.mockReturnValue(true);
+      const { result, unmount } = renderFormHook();
+
+      act(() => {
+        result.current.formState.setAmount('0.1');
+      });
+
+      await act(async () => {
+        result.current.handleSubmit({ preventDefault: vi.fn() } as unknown as React.FormEvent);
+      });
+
+      expect(result.current.formState.isLoading).toBe(true);
+
+      unmount();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+
+      expect(onExecuteTrade).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
     });
   });
 });

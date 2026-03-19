@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { useLocation } from 'react-router-dom';
 import Footer from './Footer';
 import MobileHeader from './MobileHeader';
@@ -19,13 +20,37 @@ import PortfolioView from '../views/PortfolioView';
 import TradeView from '../views/TradeView';
 import { useAppInitialization } from '../../hooks/useAppInitialization';
 import { usePortfolioManager } from '../../hooks/usePortfolioManager';
+import { dbService } from '../../services/db';
+import { usePersistenceSyncStore } from '../../store/usePersistenceSyncStore';
 import { useStore } from '../../store/useStore';
+import { roundUSD } from '../../utils/math';
+import { createDefaultPortfolio } from '../../utils/appPersistence';
+import {
+  writeLocalPortfolioStorage,
+  clearLegacyOrderStorage,
+  clearLegacyTransactionStorage,
+  clearLocalSimulatorStorage,
+} from '../../utils/localSimulatorState';
+import { normalizePathname } from '../../utils/pathname';
+
+type HydrationRecoveryAction = 'clear_orders' | 'clear_transactions' | 'factory_reset';
 
 const TerminalShell: React.FC = () => {
   const location = useLocation();
+  const pathname = normalizePathname(location.pathname);
   const [isStatsExpanded, setIsStatsExpanded] = useState(false);
-  const { initializationStage, initialReplayError, retryInitialReplay, skipInitialReplay } =
-    useAppInitialization();
+  const [activeRecoveryAction, setActiveRecoveryAction] = useState<HydrationRecoveryAction | null>(
+    null
+  );
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const {
+    initializationStage,
+    hydrationError,
+    retryHydration,
+    initialReplayError,
+    retryInitialReplay,
+    skipInitialReplay,
+  } = useAppInitialization();
   const isAppReady = initializationStage === 'ready';
 
   const portfolio = useStore((state) => state.portfolio);
@@ -35,11 +60,35 @@ const TerminalShell: React.FC = () => {
   const setIsResetModalOpen = useStore((state) => state.setIsResetModalOpen);
   const selectedHoldingForEdit = useStore((state) => state.selectedHoldingForEdit);
   const setSelectedHoldingForEdit = useStore((state) => state.setSelectedHoldingForEdit);
+  const setPortfolio = useStore((state) => state.setPortfolio);
+  const setOrders = useStore((state) => state.setOrders);
+  const setTransactions = useStore((state) => state.setTransactions);
+  const persistenceSyncIssues = usePersistenceSyncStore((state) => state.issues);
 
   const { totalEquity, totalPnL, handleConfirmReset, handleUpdateStrategy, isScoreDataComplete } =
     usePortfolioManager({
       autoCaptureScoreSnapshots: isAppReady,
     });
+  const degradedPersistenceStores = Object.values(persistenceSyncIssues).filter(
+    (issue) => issue.status === 'degraded'
+  );
+  const retryingPersistenceStores = Object.values(persistenceSyncIssues).filter(
+    (issue) => issue.status === 'retrying'
+  );
+  const persistenceWarning =
+    degradedPersistenceStores.length > 0
+      ? {
+          title: 'Local Persistence Degraded',
+          tone: 'degraded' as const,
+          stores: degradedPersistenceStores,
+        }
+      : retryingPersistenceStores.length > 0
+        ? {
+            title: 'Local Persistence Retrying',
+            tone: 'retrying' as const,
+            stores: retryingPersistenceStores,
+          }
+        : null;
 
   const handleCloseResetModal = React.useCallback(
     () => setIsResetModalOpen(false),
@@ -55,20 +104,20 @@ const TerminalShell: React.FC = () => {
     if (scrollContainer) {
       scrollContainer.scrollTo({ top: 0, behavior: 'instant' });
     }
-  }, [location.pathname]);
+  }, [pathname]);
 
-  const isTradePage = location.pathname.includes('/trade');
+  const isTradePage = pathname.startsWith('/trade/');
 
   let viewElement: React.ReactNode = null;
-  if (location.pathname === '/markets') {
+  if (pathname === '/markets') {
     viewElement = <MarketView />;
-  } else if (location.pathname === '/portfolio') {
+  } else if (pathname === '/portfolio') {
     viewElement = <PortfolioView />;
-  } else if (location.pathname === '/orders') {
+  } else if (pathname === '/orders') {
     viewElement = <OrdersView />;
-  } else if (location.pathname === '/history') {
+  } else if (pathname === '/history') {
     viewElement = <AnalysisView />;
-  } else if (location.pathname.startsWith('/trade/')) {
+  } else if (pathname.startsWith('/trade/')) {
     viewElement = <TradeView />;
   }
 
@@ -77,6 +126,221 @@ const TerminalShell: React.FC = () => {
       setIsStatsExpanded(false);
     }
   }, [isTradePage]);
+
+  const resolveRecoverableAccountValue = React.useCallback(() => {
+    return roundUSD(Math.max(isScoreDataComplete ? totalEquity : 0, portfolio.balance, 0));
+  }, [isScoreDataComplete, portfolio.balance, totalEquity]);
+
+  const createRecoveryPortfolioSnapshot = React.useCallback(() => {
+    const recoverableAccountValue = resolveRecoverableAccountValue();
+    return {
+      balance: recoverableAccountValue,
+      initialBalance: recoverableAccountValue,
+      holdings: [],
+      peakBalance: recoverableAccountValue,
+      historicalMDD: 0,
+      grossProfit: 0,
+      grossLoss: 0,
+      validTradesCount: 0,
+    };
+  }, [resolveRecoverableAccountValue]);
+
+  const handleRetryHydration = React.useCallback(() => {
+    setRecoveryError(null);
+    retryHydration();
+  }, [retryHydration]);
+
+  const handleReloadApp = React.useCallback(() => {
+    window.location.reload();
+  }, []);
+
+  const handleHydrationRecovery = React.useCallback(
+    async (action: HydrationRecoveryAction) => {
+      if (action === 'factory_reset') {
+        const shouldContinue =
+          typeof window === 'undefined' ||
+          window.confirm(
+            'This will remove your local ZEROHUE simulator snapshot, orders, transaction history, and cached market history on this browser. Continue?'
+          );
+        if (!shouldContinue) {
+          return;
+        }
+      }
+
+      setRecoveryError(null);
+      setActiveRecoveryAction(action);
+
+      try {
+        if (action === 'clear_orders') {
+          await dbService.clear('orders');
+          const nextPortfolio = createRecoveryPortfolioSnapshot();
+          const didClearLegacyOrders = clearLegacyOrderStorage();
+          const didPersistPortfolio = writeLocalPortfolioStorage(nextPortfolio);
+          if (!didClearLegacyOrders || !didPersistPortfolio) {
+            throw new Error('failed to persist orders recovery state');
+          }
+          setPortfolio(nextPortfolio);
+          setOrders([]);
+          toast.success(
+            'Local orders cache cleared and a clean cash snapshot was rebuilt. Retrying startup hydration.'
+          );
+        } else if (action === 'clear_transactions') {
+          await dbService.clear('transactions');
+          const scoreResetBaseline = resolveRecoverableAccountValue();
+          const nextPortfolio = {
+            ...portfolio,
+            initialBalance: scoreResetBaseline,
+            peakBalance: scoreResetBaseline,
+            historicalMDD: 0,
+            grossProfit: 0,
+            grossLoss: 0,
+            validTradesCount: 0,
+          };
+          const didClearLegacyTransactions = clearLegacyTransactionStorage();
+          const didPersistPortfolio = writeLocalPortfolioStorage(nextPortfolio);
+          if (!didClearLegacyTransactions || !didPersistPortfolio) {
+            throw new Error('failed to persist transaction recovery state');
+          }
+          setPortfolio(nextPortfolio);
+          setTransactions([]);
+          toast.success(
+            'Local transaction history cleared and performance snapshot reset. Retrying startup hydration.'
+          );
+        } else {
+          const nextPortfolio = createDefaultPortfolio();
+          await dbService.resetLocalPersistence();
+          const didClearLocalState = clearLocalSimulatorStorage();
+          if (!didClearLocalState) {
+            throw new Error('failed to clear local simulator state');
+          }
+          setPortfolio(nextPortfolio);
+          setOrders([]);
+          setTransactions([]);
+          toast.success('Local simulator state rebuilt. Retrying startup hydration.');
+        }
+
+        handleRetryHydration();
+      } catch (error) {
+        console.error('Hydration recovery action failed', error);
+        setRecoveryError(
+          action === 'factory_reset'
+            ? 'Full local recovery failed. Clear the ZEROHUE site data in your browser settings, then reload the app.'
+            : 'Targeted cache recovery failed. Try the full local reset if the startup error keeps returning.'
+        );
+      } finally {
+        setActiveRecoveryAction(null);
+      }
+    },
+    [
+      handleRetryHydration,
+      createRecoveryPortfolioSnapshot,
+      portfolio,
+      resolveRecoverableAccountValue,
+      setOrders,
+      setPortfolio,
+      setTransactions,
+    ]
+  );
+
+  if (initializationStage === 'hydration_error' && hydrationError) {
+    const isOrdersHydrationError = hydrationError.code === 'orders_unavailable';
+    const isTransactionsHydrationError = hydrationError.code === 'transactions_unavailable';
+
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-[#020617] p-6">
+        <div className="w-full max-w-xl rounded-3xl border border-white/10 bg-slate-900/80 p-8 shadow-2xl shadow-black/30 backdrop-blur-xl">
+          <div className="text-[11px] font-mono uppercase tracking-[0.35em] text-amber-300/80">
+            Startup State Error
+          </div>
+          <h1 className="mt-4 text-2xl font-bold text-white">
+            Simulator state could not be restored safely
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate-300">{hydrationError.message}</p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            ZEROHUE blocked terminal startup because the restored portfolio, orders, and history
+            snapshot could no longer be trusted as a single source of truth.
+          </p>
+          <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
+            <div className="font-semibold text-white">Recovery Actions</div>
+            <p className="mt-2 leading-6 text-slate-400">
+              Try a targeted cache cleanup first. If the same startup error keeps coming back, use
+              the full local reset to rebuild ZEROHUE&apos;s persisted browser state from scratch.
+            </p>
+          </div>
+          {recoveryError && (
+            <div
+              className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm leading-6 text-red-100"
+              role="alert"
+            >
+              {recoveryError}
+            </div>
+          )}
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            <button
+              onClick={handleRetryHydration}
+              disabled={activeRecoveryAction !== null}
+              className="inline-flex items-center justify-center rounded-2xl bg-blue-500 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-400"
+            >
+              Retry Hydration
+            </button>
+            <button
+              onClick={handleReloadApp}
+              disabled={activeRecoveryAction !== null}
+              className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-200 transition-colors hover:bg-white/10"
+            >
+              Reload App
+            </button>
+          </div>
+          <div className="mt-3 flex flex-col gap-3">
+            {isOrdersHydrationError && (
+              <div className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-3">
+                <button
+                  onClick={() => void handleHydrationRecovery('clear_orders')}
+                  disabled={activeRecoveryAction !== null}
+                  className="inline-flex w-full items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {activeRecoveryAction === 'clear_orders'
+                    ? 'Clearing Orders Cache And Rebuilding Cash Snapshot...'
+                    : 'Clear Orders Cache And Rebuild Cash Snapshot'}
+                </button>
+                <p className="mt-2 text-xs leading-5 text-amber-100/80">
+                  Removes persisted orders and rebuilds a clean cash-only portfolio snapshot from
+                  this browser&apos;s current recoverable account value. Transaction history stays
+                  intact.
+                </p>
+              </div>
+            )}
+            {isTransactionsHydrationError && (
+              <div className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-3">
+                <button
+                  onClick={() => void handleHydrationRecovery('clear_transactions')}
+                  disabled={activeRecoveryAction !== null}
+                  className="inline-flex w-full items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-400/15 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {activeRecoveryAction === 'clear_transactions'
+                    ? 'Clearing Transaction History And Resetting Performance Snapshot...'
+                    : 'Clear Transaction History And Reset Performance Snapshot'}
+                </button>
+                <p className="mt-2 text-xs leading-5 text-amber-100/80">
+                  Removes persisted trade history and resets realized performance stats on this
+                  browser only. Orders, portfolio cash, and holdings stay intact.
+                </p>
+              </div>
+            )}
+            <button
+              onClick={() => void handleHydrationRecovery('factory_reset')}
+              disabled={activeRecoveryAction !== null}
+              className="inline-flex items-center justify-center rounded-2xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm font-semibold text-red-100 transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {activeRecoveryAction === 'factory_reset'
+                ? 'Rebuilding Local Simulator State...'
+                : 'Factory Reset Local Simulator State'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (initializationStage === 'hydrating' || initializationStage === 'replay_pending') {
     return (
@@ -146,6 +410,27 @@ const TerminalShell: React.FC = () => {
         >
           <div className="mx-auto flex h-full max-w-7xl flex-col gap-8 lg:flex-row">
             <div className="flex flex-1 flex-col space-y-8">
+              {persistenceWarning && (
+                <div
+                  className={`rounded-2xl border px-4 py-3 text-sm leading-6 ${
+                    persistenceWarning.tone === 'degraded'
+                      ? 'border-red-500/30 bg-red-500/10 text-red-100'
+                      : 'border-amber-400/30 bg-amber-400/10 text-amber-100'
+                  }`}
+                  role="status"
+                >
+                  <div className="text-[11px] font-mono uppercase tracking-[0.28em]">
+                    {persistenceWarning.title}
+                  </div>
+                  <p className="mt-2">
+                    {persistenceWarning.stores
+                      .map((issue) => issue.message)
+                      .filter(Boolean)
+                      .join(' ')}
+                  </p>
+                </div>
+              )}
+
               {!isTradePage && (
                 <div className="md:hidden">
                   <button
@@ -197,7 +482,7 @@ const TerminalShell: React.FC = () => {
               <div className="relative">
                 <ErrorBoundary>
                   <AnimatePresence mode="wait">
-                    <PageTransition key={location.pathname}>{viewElement}</PageTransition>
+                    <PageTransition key={pathname}>{viewElement}</PageTransition>
                   </AnimatePresence>
                 </ErrorBoundary>
               </div>

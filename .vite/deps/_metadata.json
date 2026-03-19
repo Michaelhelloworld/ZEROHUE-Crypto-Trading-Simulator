@@ -1,0 +1,82 @@
+{
+  "hash": "7f68bcd1",
+  "configHash": "a3bc6d81",
+  "lockfileHash": "afdc09bd",
+  "browserHash": "640a1105",
+  "optimized": {
+    "framer-motion": {
+      "src": "../../node_modules/framer-motion/dist/es/index.mjs",
+      "file": "framer-motion.js",
+      "fileHash": "0826ae93",
+      "needsInterop": false
+    },
+    "idb": {
+      "src": "../../node_modules/idb/build/index.js",
+      "file": "idb.js",
+      "fileHash": "98f1ae91",
+      "needsInterop": false
+    },
+    "lucide-react": {
+      "src": "../../node_modules/lucide-react/dist/esm/lucide-react.js",
+      "file": "lucide-react.js",
+      "fileHash": "177db16e",
+      "needsInterop": false
+    },
+    "react": {
+      "src": "../../node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "d7949e4a",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "765e95ac",
+      "needsInterop": true
+    },
+    "react-hot-toast": {
+      "src": "../../node_modules/react-hot-toast/dist/index.mjs",
+      "file": "react-hot-toast.js",
+      "fileHash": "e8a31291",
+      "needsInterop": false
+    },
+    "react-router": {
+      "src": "../../node_modules/react-router/dist/development/index.mjs",
+      "file": "react-router.js",
+      "fileHash": "f0074d03",
+      "needsInterop": false
+    },
+    "react-router-dom": {
+      "src": "../../node_modules/react-router-dom/dist/index.mjs",
+      "file": "react-router-dom.js",
+      "fileHash": "a41d11df",
+      "needsInterop": false
+    },
+    "recharts": {
+      "src": "../../node_modules/recharts/es6/index.js",
+      "file": "recharts.js",
+      "fileHash": "e1e0314d",
+      "needsInterop": false
+    },
+    "zustand": {
+      "src": "../../node_modules/zustand/esm/index.mjs",
+      "file": "zustand.js",
+      "fileHash": "b3be6ac5",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-ZWUTBOB6": {
+      "file": "chunk-ZWUTBOB6.js"
+    },
+    "chunk-FGJC6RLV": {
+      "file": "chunk-FGJC6RLV.js"
+    },
+    "chunk-SKCSXP5W": {
+      "file": "chunk-SKCSXP5W.js"
+    },
+    "chunk-DC5AMYBS": {
+      "file": "chunk-DC5AMYBS.js"
+    }
+  }
+}

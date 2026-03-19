@@ -41,6 +41,20 @@ describe('Sidebar', () => {
     expect(screen.getByText(/Price data incomplete/i)).toBeInTheDocument();
   });
 
+  it('uses a more compact width while the desktop sidebar is expanded', () => {
+    mockPortfolioManager();
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>
+    );
+
+    expect(
+      screen.getByRole('navigation', { name: /primary navigation/i }).closest('aside')
+    ).toHaveClass('w-64');
+  });
+
   it('keeps navigation links accessible after collapsing the sidebar', () => {
     mockPortfolioManager();
 
@@ -63,5 +77,17 @@ describe('Sidebar', () => {
     for (const label of ['Markets', 'Portfolio', 'Orders', 'History', 'FAQ', 'About']) {
       expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
     }
+  });
+
+  it('keeps the current terminal destination active when the URL has a trailing slash', () => {
+    mockPortfolioManager();
+
+    render(
+      <MemoryRouter initialEntries={['/markets/']}>
+        <Sidebar />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole('link', { name: 'Markets' })).toHaveAttribute('aria-current', 'page');
   });
 });

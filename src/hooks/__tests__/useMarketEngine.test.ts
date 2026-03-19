@@ -185,6 +185,83 @@ describe('useMarketEngine', () => {
       expect(mockState.portfolio.balance).toBeCloseTo(0);
     });
 
+    it('does not immediately trigger TP/SL for a BUY that fills on the same live tick', () => {
+      const order = createMockOrder({
+        limitPrice: 100,
+        total: 100,
+        stopLossPrice: 90,
+        timestamp: 1,
+      });
+
+      const result = processTick({
+        requestId: 1,
+        requestVersion: 0,
+        coins: [createMockCoin({ price: 80, history: [80] })],
+        orders: [order],
+        portfolio: {
+          balance: 0,
+          initialBalance: 50000,
+          holdings: [],
+          validTradesCount: 0,
+          grossProfit: 0,
+          grossLoss: 0,
+        },
+      });
+
+      expect(result?.nextOrders?.[0].status).toBe('FILLED');
+      expect(result?.portfolioUpdates?.holdings).toHaveLength(1);
+      expect(result?.newTransactions).toHaveLength(1);
+      expect(result?.notifications).toEqual([]);
+    });
+
+    it('recomputes BUY volume-threshold eligibility after earlier fills in the same tick', () => {
+      const firstOrder = createMockOrder({
+        id: 'buy-major',
+        coinId: 'bitcoin',
+        coinSymbol: 'BTC',
+        amount: 1,
+        limitPrice: 19010,
+        total: 19010,
+      });
+      const secondOrder = createMockOrder({
+        id: 'buy-borderline',
+        coinId: 'ethereum',
+        coinSymbol: 'ETH',
+        amount: 1,
+        limitPrice: 1000,
+        total: 1000,
+      });
+
+      const result = processTick({
+        requestId: 1,
+        requestVersion: 0,
+        coins: [
+          createMockCoin({ id: 'bitcoin', symbol: 'BTC', price: 19010, history: [19010] }),
+          createMockCoin({ id: 'ethereum', symbol: 'ETH', price: 1000, history: [1000] }),
+        ],
+        orders: [firstOrder, secondOrder],
+        portfolio: {
+          balance: 0,
+          initialBalance: 20010,
+          holdings: [],
+          validTradesCount: 0,
+          grossProfit: 0,
+          grossLoss: 0,
+        },
+      });
+
+      expect(result?.nextOrders?.every((order) => order.status === 'FILLED')).toBe(true);
+      expect(
+        result?.portfolioUpdates?.holdings.map((holding) => ({
+          coinId: holding.coinId,
+          meetsVolumeCondition: holding.meetsVolumeCondition,
+        }))
+      ).toEqual([
+        { coinId: 'bitcoin', meetsVolumeCondition: true },
+        { coinId: 'ethereum', meetsVolumeCondition: true },
+      ]);
+    });
+
     it('should re-evaluate immediately when a newly placed limit order is already marketable', () => {
       const { rerender } = renderHook(() => useMarketEngine());
 

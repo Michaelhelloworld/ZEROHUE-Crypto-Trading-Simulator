@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { useIDBSync } from './useIDBSync';
 import { useMarketData } from './useMarketData';
@@ -6,8 +6,9 @@ import { useOfflineOrderExecution } from './useOfflineOrderExecution';
 import { useMarketEngine } from './useMarketEngine';
 import { safeStorage } from '../utils/safeStorage';
 import { Order, Portfolio, Transaction } from '../types';
-import { hydratePersistedAppState } from '../utils/appPersistence';
+import { hydratePersistedAppState, PersistedAppHydrationError } from '../utils/appPersistence';
 import {
+  AppInitializationHydrationError,
   AppInitializationReplayError,
   isAppInitializationReady,
   resolveAppInitializationStage,
@@ -25,6 +26,16 @@ export const useAppInitialization = () => {
   const orders = useStore((state) => state.orders);
   const transactions = useStore((state) => state.transactions);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [hydrationError, setHydrationError] = useState<AppInitializationHydrationError | null>(
+    null
+  );
+  const [hydrationAttempt, setHydrationAttempt] = useState(0);
+
+  const retryHydration = useCallback(() => {
+    setHydrationError(null);
+    setIsHydrated(false);
+    setHydrationAttempt((previous) => previous + 1);
+  }, []);
 
   // 1. Initial Hydration Phase
   useEffect(() => {
@@ -50,7 +61,21 @@ export const useAppInitialization = () => {
         if (mounted) setIsHydrated(true);
       } catch (err) {
         console.error('Hydration failed', err);
-        if (mounted) setIsHydrated(true);
+        if (!mounted) return;
+
+        if (err instanceof PersistedAppHydrationError) {
+          setHydrationError({
+            code: err.code,
+            message: err.message,
+          });
+          return;
+        }
+
+        setHydrationError({
+          code: 'unexpected',
+          message:
+            'Startup hydration failed unexpectedly. Retry initialization before continuing into the simulator.',
+        });
       }
     };
 
@@ -59,7 +84,7 @@ export const useAppInitialization = () => {
     return () => {
       mounted = false;
     };
-  }, [setOrders, setPortfolio, setTransactions]);
+  }, [hydrationAttempt, setOrders, setPortfolio, setTransactions]);
 
   // 2. Persist Portfolio to LocalStorage continually
   useEffect(() => {
@@ -82,6 +107,7 @@ export const useAppInitialization = () => {
   const skipInitialReplay = offlineReplay?.skipInitialReplay ?? (() => {});
   const initializationStage = resolveAppInitializationStage({
     isHydrated,
+    hydrationError,
     isInitialReplaySettled,
     initialReplayError,
   });
@@ -90,6 +116,8 @@ export const useAppInitialization = () => {
   return {
     initializationStage,
     isHydrated,
+    hydrationError,
+    retryHydration,
     isInitialReplaySettled,
     initialReplayError,
     retryInitialReplay,
