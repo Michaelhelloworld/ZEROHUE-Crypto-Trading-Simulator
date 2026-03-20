@@ -4,11 +4,15 @@ import { act, renderHook } from '@testing-library/react';
 import { useMarketEngine } from '../useMarketEngine';
 import { Coin, Order } from '../../types';
 import * as useStoreModule from '../../store/useStore';
+import { useMarketExecutionStore } from '../../store/useMarketExecutionStore';
 import { processTick } from '../../workers/marketEngine.worker';
+
+let workerPostMessageCount = 0;
 
 class MockWorker {
   onmessage: ((event: any) => void) | null = null;
   postMessage(data: any) {
+    workerPostMessageCount += 1;
     if (data.type === 'TICK') {
       const result = processTick(data.payload);
       if (result && this.onmessage) {
@@ -59,7 +63,11 @@ describe('useMarketEngine', () => {
   let storeListeners: Set<(state: any, previousState: any) => void>;
 
   beforeEach(() => {
+    workerPostMessageCount = 0;
     storeListeners = new Set();
+    useMarketExecutionStore.getState().resetExecutableSources();
+    useMarketExecutionStore.getState().setSourceExecutable('BINANCE', true);
+    useMarketExecutionStore.getState().setSourceExecutable('COINBASE', true);
     mockState = {
       orders: [],
       engineStateVersion: 0,
@@ -276,6 +284,29 @@ describe('useMarketEngine', () => {
       const updater = mockState.setOrders.mock.calls[0][0];
       const resultOrders = typeof updater === 'function' ? updater([order]) : updater;
       expect(resultOrders[0].status).toBe('FILLED');
+    });
+
+    it('does not dispatch a second worker tick when only coin history changes and prices stay the same', () => {
+      const { rerender } = renderHook(() => useMarketEngine());
+
+      expect(workerPostMessageCount).toBe(1);
+
+      mockState.coins = [createMockCoin({ price: 50000, history: [49000, 49500, 50000] })];
+      rerender();
+
+      expect(workerPostMessageCount).toBe(1);
+    });
+
+    it('does not execute orders for a source until that source has delivered a live executable tick', () => {
+      useMarketExecutionStore.getState().setSourceExecutable('BINANCE', false);
+      const order = createMockOrder({ limitPrice: 45000, amount: 1 });
+      mockState.orders = [order];
+      mockState.coins = [createMockCoin({ price: 44000 })];
+
+      renderHook(() => useMarketEngine());
+
+      expect(mockState.setOrders).not.toHaveBeenCalled();
+      expect(mockState.setPortfolio).not.toHaveBeenCalled();
     });
 
     it('still processes an earlier trigger even if a later tick returns first', async () => {

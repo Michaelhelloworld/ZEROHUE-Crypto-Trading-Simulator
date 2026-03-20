@@ -2,6 +2,15 @@ import { dbService, ZEROHUESchema } from '../services/db';
 import { DEFAULT_PORTFOLIO } from '../store/useStore';
 import { Holding, Order, OrderLotAllocation, Portfolio, Transaction } from '../types';
 import { isDust, roundCrypto, roundUSD } from './math';
+import {
+  clearLocalPersistenceTransition,
+  executeLocalPersistenceTransition,
+  persistLocalPortfolioSnapshot,
+  readLocalPersistenceTransition,
+  unwrapPersistedPortfolio,
+  validatePersistedPortfolioCommitState,
+  wasLocalPersistenceTransitionCommitted,
+} from './localSimulatorState';
 import { generateUUID } from './uuid';
 import { safeStorage } from './safeStorage';
 
@@ -16,9 +25,20 @@ interface NullableNormalizationResult<T> {
 }
 
 export class PersistedAppHydrationError extends Error {
-  code: 'orders_unavailable' | 'transactions_unavailable';
+  code:
+    | 'orders_unavailable'
+    | 'transactions_unavailable'
+    | 'portfolio_snapshot_stale'
+    | 'portfolio_unavailable';
 
-  constructor(message: string, code: 'orders_unavailable' | 'transactions_unavailable') {
+  constructor(
+    message: string,
+    code:
+      | 'orders_unavailable'
+      | 'transactions_unavailable'
+      | 'portfolio_snapshot_stale'
+      | 'portfolio_unavailable'
+  ) {
     super(message);
     this.name = 'PersistedAppHydrationError';
     this.code = code;
@@ -564,6 +584,22 @@ const reconcileOpenOrdersForFallbackPortfolio = (orders: Order[]): Normalization
   };
 };
 
+const persistHydratedPortfolioSnapshot = async (portfolio: Portfolio) => {
+  try {
+    const result = await persistLocalPortfolioSnapshot(portfolio);
+    if (result.ok) {
+      return;
+    }
+  } catch (error) {
+    console.error('Failed to persist the hydrated portfolio snapshot', error);
+  }
+
+  throw new PersistedAppHydrationError(
+    'Failed to persist the hydrated portfolio snapshot locally. Startup was blocked to avoid restoring a stale account state on refresh.',
+    'portfolio_unavailable'
+  );
+};
+
 export const hydratePersistedAppState = async ({
   applyPortfolio,
   applyOrders,
@@ -573,6 +609,36 @@ export const hydratePersistedAppState = async ({
   applyOrders: (orders: Order[]) => void;
   applyTransactions: (transactions: Transaction[]) => void;
 }) => {
+  const pendingLocalPersistenceTransition = readLocalPersistenceTransition();
+  if (pendingLocalPersistenceTransition) {
+    const wasTransitionCommitted = await wasLocalPersistenceTransitionCommitted(
+      pendingLocalPersistenceTransition
+    );
+    if (wasTransitionCommitted) {
+      if (!clearLocalPersistenceTransition()) {
+        console.warn('Failed to clear the already-committed local persistence transition journal.');
+      }
+    } else {
+      console.warn(
+        `Resuming interrupted local persistence transition: ${pendingLocalPersistenceTransition.action}`
+      );
+      const didResumeTransition = await executeLocalPersistenceTransition(
+        pendingLocalPersistenceTransition
+      );
+      if (!didResumeTransition) {
+        throw new Error('Failed to resume interrupted local persistence transition.');
+      }
+    }
+  }
+
+  const portfolioCommitValidation = await validatePersistedPortfolioCommitState();
+  if (!portfolioCommitValidation.valid) {
+    throw new PersistedAppHydrationError(
+      'The local portfolio snapshot is older than the latest persisted simulator commit. Startup was blocked to avoid restoring a split portfolio and order state.',
+      'portfolio_snapshot_stale'
+    );
+  }
+
   dbService.pruneHistory().catch((error) => {
     console.error('Failed to prune market history', error);
   });
@@ -580,27 +646,21 @@ export const hydratePersistedAppState = async ({
   const storedPortfolio = safeStorage.getItem('zerohue_portfolio');
   let shouldReconcileOpenOrders = false;
   if (storedPortfolio) {
-    try {
-      const parsedPortfolio = JSON.parse(storedPortfolio);
-      const normalizedPortfolio = normalizePortfolioResult(parsedPortfolio);
-      shouldReconcileOpenOrders = requiresOpenOrderReconciliation(
-        parsedPortfolio,
-        normalizedPortfolio.value
-      );
-      applyPortfolio(normalizedPortfolio.value);
-      if (normalizedPortfolio.dirty) {
-        safeStorage.setItem('zerohue_portfolio', JSON.stringify(normalizedPortfolio.value));
-      }
-    } catch (error) {
-      console.error('Failed to parse portfolio', error);
-      const fallbackPortfolio = createDefaultPortfolio();
-      shouldReconcileOpenOrders = true;
-      applyPortfolio(fallbackPortfolio);
-      safeStorage.setItem('zerohue_portfolio', JSON.stringify(fallbackPortfolio));
+    const { rawPortfolio: parsedPortfolio } = unwrapPersistedPortfolio(storedPortfolio);
+    const normalizedPortfolio = normalizePortfolioResult(parsedPortfolio);
+    shouldReconcileOpenOrders = requiresOpenOrderReconciliation(
+      parsedPortfolio,
+      normalizedPortfolio.value
+    );
+    applyPortfolio(normalizedPortfolio.value);
+    if (normalizedPortfolio.dirty) {
+      await persistHydratedPortfolioSnapshot(normalizedPortfolio.value);
     }
   } else {
     shouldReconcileOpenOrders = true;
-    applyPortfolio(createDefaultPortfolio());
+    const fallbackPortfolio = createDefaultPortfolio();
+    applyPortfolio(fallbackPortfolio);
+    await persistHydratedPortfolioSnapshot(fallbackPortfolio);
   }
 
   const hydratedOrdersResult = await hydrateIDBArray('orders', applyOrders);

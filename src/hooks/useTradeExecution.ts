@@ -15,8 +15,21 @@ import {
 } from '../utils/lotAccounting';
 import { generateUUID } from '../utils/uuid';
 import { useStore } from '../store/useStore';
+import {
+  getPersistenceInvalidationMessage,
+  isCurrentTabPersistenceWritable,
+} from '../utils/persistenceEpoch';
 
 const processingOrders = new Set<string>();
+
+const canMutateTradingState = () => {
+  if (isCurrentTabPersistenceWritable()) {
+    return true;
+  }
+
+  toast.error(getPersistenceInvalidationMessage());
+  return false;
+};
 
 const handleLimitOrder = (
   coin: Coin,
@@ -185,6 +198,10 @@ export const useTradeExecution = () => {
       stopLossPrice?: number
     ): boolean => {
       try {
+        if (!canMutateTradingState()) {
+          return false;
+        }
+
         const { coins } = useStore.getState();
         const coin = coins.find((c) => c.id === coinId);
         if (!coin) return false;
@@ -212,6 +229,7 @@ export const useTradeExecution = () => {
 
   const handleCancelOrder = useCallback((orderId: string) => {
     if (processingOrders.has(orderId)) return;
+    if (!canMutateTradingState()) return;
 
     const { orders, setOrders, setPortfolio } = useStore.getState();
     const order = orders.find((o) => o.id === orderId);

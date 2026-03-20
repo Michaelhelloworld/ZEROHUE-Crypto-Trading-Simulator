@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { dbService, ZEROHUESchema } from '../services/db';
+import { usePersistenceSyncStore } from '../store/usePersistenceSyncStore';
 import {
-  PersistenceTrackedStoreName,
-  usePersistenceSyncStore,
-} from '../store/usePersistenceSyncStore';
+  getPersistenceInvalidationMessage,
+  isCurrentTabPersistenceWritable,
+} from '../utils/persistenceEpoch';
 
 const INITIAL_SYNC_DELAY_MS = 100;
 const BASE_RETRY_SYNC_DELAY_MS = 1000;
@@ -12,8 +13,7 @@ const MAX_CONSECUTIVE_SYNC_FAILURES = 5;
 
 const isTrackedPersistenceStore = (
   storeName: keyof ZEROHUESchema
-): storeName is PersistenceTrackedStoreName =>
-  storeName === 'orders' || storeName === 'transactions';
+): storeName is 'orders' | 'transactions' => storeName === 'orders' || storeName === 'transactions';
 
 /**
  * A pure side-effect hook that observes a data array and incrementally syncs
@@ -70,6 +70,15 @@ export function useIDBSync<K extends keyof ZEROHUESchema>(
 
       const prevData = previousDataRef.current;
       const currentData = data;
+
+      if (!isCurrentTabPersistenceWritable()) {
+        previousDataRef.current = [...currentData];
+        consecutiveFailureCountRef.current = 0;
+        if (trackedStoreName) {
+          markStoreDegraded(trackedStoreName, 1, getPersistenceInvalidationMessage());
+        }
+        return;
+      }
 
       const getKey = (item: ZEROHUESchema[K]['value']): string | null => {
         if (!item) return null;

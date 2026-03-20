@@ -3,7 +3,6 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, Mock, vi } from 'vitest';
 import TerminalShell from '../TerminalShell';
-import { dbService } from '../../../services/db';
 import { usePersistenceSyncStore } from '../../../store/usePersistenceSyncStore';
 import * as localSimulatorStateModule from '../../../utils/localSimulatorState';
 
@@ -11,6 +10,8 @@ const retryHydration = vi.fn();
 let mockInitializationStage: 'hydration_error' | 'ready' = 'hydration_error';
 let hydrationErrorCode: 'orders_unavailable' | 'transactions_unavailable' = 'orders_unavailable';
 let mockTotalEquity = 72345.67;
+let mockIsScoreDataComplete = true;
+let mockIsCurrentTabWritable = true;
 
 interface MockStoreState {
   [key: string]: unknown;
@@ -46,13 +47,6 @@ vi.mock('react-hot-toast', () => ({
   },
 }));
 
-vi.mock('../../../services/db', () => ({
-  dbService: {
-    clear: vi.fn(),
-    resetLocalPersistence: vi.fn(),
-  },
-}));
-
 vi.mock('../../../hooks/useAppInitialization', () => ({
   useAppInitialization: () => ({
     initializationStage: mockInitializationStage,
@@ -70,6 +64,10 @@ vi.mock('../../../hooks/useAppInitialization', () => ({
     initialReplayError: null,
     retryInitialReplay: vi.fn(),
     skipInitialReplay: vi.fn(),
+    isCurrentTabWritable: mockIsCurrentTabWritable,
+    crossTabInvalidationMessage: mockIsCurrentTabWritable
+      ? null
+      : 'Another ZEROHUE tab rebuilt local persistence. Reload this tab before continuing.',
   }),
 }));
 
@@ -79,27 +77,18 @@ vi.mock('../../../hooks/usePortfolioManager', () => ({
     totalPnL: 0,
     handleConfirmReset: vi.fn(),
     handleUpdateStrategy: vi.fn(),
-    isScoreDataComplete: true,
+    isScoreDataComplete: mockIsScoreDataComplete,
   }),
 }));
 
 vi.mock('../../../utils/localSimulatorState', () => ({
-  writeLocalPortfolioStorage: vi.fn((portfolio) => {
-    localStorage.setItem('zerohue_portfolio', JSON.stringify(portfolio));
+  stageLocalPersistenceTransition: vi.fn((transition) => {
+    localStorage.setItem('zerohue_persistence_transition', JSON.stringify(transition));
     return true;
   }),
-  clearLegacyOrderStorage: vi.fn(() => {
-    localStorage.removeItem('zerohue_orders');
-    return true;
-  }),
-  clearLegacyTransactionStorage: vi.fn(() => {
-    localStorage.removeItem('zerohue_transactions');
-    return true;
-  }),
-  clearLocalSimulatorStorage: vi.fn(() => {
-    localStorage.removeItem('zerohue_portfolio');
-    localStorage.removeItem('zerohue_orders');
-    localStorage.removeItem('zerohue_transactions');
+  executeLocalPersistenceTransition: vi.fn(async (transition) => {
+    localStorage.setItem('zerohue_portfolio', JSON.stringify(transition.nextPortfolio));
+    localStorage.removeItem('zerohue_persistence_transition');
     return true;
   }),
 }));
@@ -150,6 +139,8 @@ describe('TerminalShell hydration recovery', () => {
     });
     hydrationErrorCode = 'orders_unavailable';
     mockTotalEquity = 72345.67;
+    mockIsScoreDataComplete = true;
+    mockIsCurrentTabWritable = true;
     mockStoreState = {
       portfolio: {
         balance: 42000,
@@ -179,28 +170,19 @@ describe('TerminalShell hydration recovery', () => {
         mockStoreState.transactions = nextTransactions;
       }),
     };
-    vi.mocked(dbService.clear).mockResolvedValue(undefined);
-    vi.mocked(dbService.resetLocalPersistence).mockResolvedValue(true);
-    vi.mocked(localSimulatorStateModule.writeLocalPortfolioStorage).mockImplementation(
-      (portfolio) => {
-        localStorage.setItem('zerohue_portfolio', JSON.stringify(portfolio));
+    vi.mocked(localSimulatorStateModule.stageLocalPersistenceTransition).mockImplementation(
+      (transition) => {
+        localStorage.setItem('zerohue_persistence_transition', JSON.stringify(transition));
         return true;
       }
     );
-    vi.mocked(localSimulatorStateModule.clearLegacyOrderStorage).mockImplementation(() => {
-      localStorage.removeItem('zerohue_orders');
-      return true;
-    });
-    vi.mocked(localSimulatorStateModule.clearLegacyTransactionStorage).mockImplementation(() => {
-      localStorage.removeItem('zerohue_transactions');
-      return true;
-    });
-    vi.mocked(localSimulatorStateModule.clearLocalSimulatorStorage).mockImplementation(() => {
-      localStorage.removeItem('zerohue_portfolio');
-      localStorage.removeItem('zerohue_orders');
-      localStorage.removeItem('zerohue_transactions');
-      return true;
-    });
+    vi.mocked(localSimulatorStateModule.executeLocalPersistenceTransition).mockImplementation(
+      async (transition) => {
+        localStorage.setItem('zerohue_portfolio', JSON.stringify(transition.nextPortfolio));
+        localStorage.removeItem('zerohue_persistence_transition');
+        return true;
+      }
+    );
     retryHydration.mockReset();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
   });
@@ -219,7 +201,6 @@ describe('TerminalShell hydration recovery', () => {
     );
 
     await waitFor(() => {
-      expect(dbService.clear).toHaveBeenCalledWith('orders');
       expect(retryHydration).toHaveBeenCalledTimes(1);
       expect(mockStoreState.setPortfolio).toHaveBeenCalledWith({
         balance: 72345.67,
@@ -233,6 +214,22 @@ describe('TerminalShell hydration recovery', () => {
       });
       expect(mockStoreState.setOrders).toHaveBeenCalledWith([]);
     });
+    expect(localSimulatorStateModule.executeLocalPersistenceTransition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        version: 1,
+        action: 'clear_orders',
+        nextPortfolio: {
+          balance: 72345.67,
+          initialBalance: 72345.67,
+          holdings: [],
+          peakBalance: 72345.67,
+          historicalMDD: 0,
+          grossProfit: 0,
+          grossLoss: 0,
+          validTradesCount: 0,
+        },
+      })
+    );
 
     expect(JSON.parse(localStorage.getItem('zerohue_portfolio') || 'null')).toEqual({
       balance: 72345.67,
@@ -266,7 +263,6 @@ describe('TerminalShell hydration recovery', () => {
     );
 
     await waitFor(() => {
-      expect(dbService.clear).toHaveBeenCalledWith('transactions');
       expect(mockStoreState.setTransactions).toHaveBeenCalledWith([]);
       expect(mockStoreState.setPortfolio).toHaveBeenCalledWith({
         balance: 42000,
@@ -280,10 +276,26 @@ describe('TerminalShell hydration recovery', () => {
       });
       expect(retryHydration).toHaveBeenCalledTimes(1);
     });
+    expect(localSimulatorStateModule.executeLocalPersistenceTransition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        version: 1,
+        action: 'clear_transactions',
+        nextPortfolio: {
+          balance: 42000,
+          initialBalance: 72345.67,
+          holdings: [{ coinId: 'bitcoin', amount: 1, averageCost: 30000 }],
+          peakBalance: 72345.67,
+          historicalMDD: 0,
+          grossProfit: 0,
+          grossLoss: 0,
+          validTradesCount: 0,
+        },
+      })
+    );
   });
 
   it('surfaces a recovery error instead of retrying when local portfolio persistence cannot be updated', async () => {
-    vi.mocked(localSimulatorStateModule.writeLocalPortfolioStorage).mockReturnValueOnce(false);
+    vi.mocked(localSimulatorStateModule.stageLocalPersistenceTransition).mockReturnValueOnce(false);
 
     render(
       <MemoryRouter initialEntries={['/markets']}>
@@ -299,6 +311,26 @@ describe('TerminalShell hydration recovery', () => {
       expect(retryHydration).not.toHaveBeenCalled();
       expect(screen.getByRole('alert')).toHaveTextContent(/Targeted cache recovery failed/i);
     });
+    expect(localSimulatorStateModule.executeLocalPersistenceTransition).not.toHaveBeenCalled();
+  });
+
+  it('disables cash-snapshot recovery until live prices can value current holdings safely', () => {
+    mockTotalEquity = 0;
+    mockIsScoreDataComplete = false;
+    hydrationErrorCode = 'orders_unavailable';
+    render(
+      <MemoryRouter initialEntries={['/markets']}>
+        <TerminalShell />
+      </MemoryRouter>
+    );
+
+    const disabledButton = screen.getByRole('button', {
+      name: /clear orders cache and rebuild cash snapshot/i,
+    });
+    expect(disabledButton).toBeDisabled();
+    expect(
+      screen.getByText(/disabled until live prices finish loading for current holdings/i)
+    ).toBeInTheDocument();
   });
 
   it('can factory reset local simulator state from the startup error view', async () => {
@@ -312,9 +344,24 @@ describe('TerminalShell hydration recovery', () => {
 
     await waitFor(() => {
       expect(window.confirm).toHaveBeenCalledTimes(1);
-      expect(dbService.resetLocalPersistence).toHaveBeenCalledTimes(1);
       expect(retryHydration).toHaveBeenCalledTimes(1);
     });
+    expect(localSimulatorStateModule.executeLocalPersistenceTransition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        version: 1,
+        action: 'factory_reset',
+        nextPortfolio: {
+          balance: 50000,
+          initialBalance: 50000,
+          holdings: [],
+          peakBalance: 50000,
+          historicalMDD: 0,
+          grossProfit: 0,
+          grossLoss: 0,
+          validTradesCount: 0,
+        },
+      })
+    );
   });
 
   it('shows a non-blocking persistence banner when IndexedDB syncing is degraded', () => {
@@ -337,5 +384,21 @@ describe('TerminalShell hydration recovery', () => {
     expect(
       screen.getByText(/Recent changes may not survive a refresh until browser storage recovers/i)
     ).toBeInTheDocument();
+  });
+
+  it('blocks the terminal and requires reload after another tab invalidates persistence writes', () => {
+    mockInitializationStage = 'ready';
+    mockIsCurrentTabWritable = false;
+
+    render(
+      <MemoryRouter initialEntries={['/markets']}>
+        <TerminalShell />
+      </MemoryRouter>
+    );
+
+    expect(
+      screen.getByText(/This tab is no longer allowed to write simulator state/i)
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /reload app/i })).toBeInTheDocument();
   });
 });

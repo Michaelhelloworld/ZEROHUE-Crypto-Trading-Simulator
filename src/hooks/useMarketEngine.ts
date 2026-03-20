@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { useStore } from '../store/useStore';
+import { useMarketExecutionStore } from '../store/useMarketExecutionStore';
 import { formatPrice } from '../utils/format';
 import { TickResultPayload } from '../utils/engineProtocol';
 import { useWorkerBridge } from './useWorkerBridge';
@@ -18,17 +19,39 @@ export const useMarketEngine = (isEnabled = true) => {
   const setTransactions = useStore((state) => state.setTransactions);
   const coins = useStore((state) => state.coins);
   const engineStateVersion = useStore((state) => state.engineStateVersion);
+  const executableSources = useMarketExecutionStore((state) => state.executableSources);
 
   const ordersRef = useRef(orders);
   const portfolioRef = useRef(portfolio);
   const isEnabledRef = useRef(isEnabled);
   const lastDispatchedSnapshotRef = useRef<{
-    coins: Coin[] | null;
+    executionSignature: string | null;
     engineStateVersion: number | null;
   }>({
-    coins: null,
+    executionSignature: null,
     engineStateVersion: null,
   });
+
+  const getCoinExecutionSignature = (nextCoins: Coin[]) =>
+    nextCoins
+      .map((coin) => `${coin.id}:${Number.isFinite(coin.price) ? coin.price : 'NaN'}`)
+      .join('|');
+
+  const getExecutableCoins = useCallback(
+    (nextCoins: Coin[]) =>
+      nextCoins.map((coin) => {
+        const source = coin.source === 'COINBASE' ? 'COINBASE' : 'BINANCE';
+        if (executableSources[source]) {
+          return coin;
+        }
+
+        return {
+          ...coin,
+          price: 0,
+        };
+      }),
+    [executableSources]
+  );
 
   useEffect(() => {
     ordersRef.current = orders;
@@ -86,9 +109,11 @@ export const useMarketEngine = (isEnabled = true) => {
     }) => {
       if (!isEnabledRef.current || nextCoins.length === 0) return;
 
+      const executableCoins = getExecutableCoins(nextCoins);
+      const executionSignature = getCoinExecutionSignature(executableCoins);
       const lastSnapshot = lastDispatchedSnapshotRef.current;
       if (
-        lastSnapshot.coins === nextCoins &&
+        lastSnapshot.executionSignature === executionSignature &&
         lastSnapshot.engineStateVersion === nextEngineStateVersion
       ) {
         return;
@@ -96,16 +121,16 @@ export const useMarketEngine = (isEnabled = true) => {
 
       dispatchTickRef.current({
         requestVersion: nextEngineStateVersion,
-        coins: nextCoins,
+        coins: executableCoins,
         orders: nextOrders,
         portfolio: nextPortfolio,
       });
       lastDispatchedSnapshotRef.current = {
-        coins: nextCoins,
+        executionSignature,
         engineStateVersion: nextEngineStateVersion,
       };
     },
-    [dispatchTickRef]
+    [dispatchTickRef, getExecutableCoins]
   );
 
   useEffect(() => {
@@ -130,5 +155,5 @@ export const useMarketEngine = (isEnabled = true) => {
       portfolio: portfolioRef.current,
       engineStateVersion,
     });
-  }, [coins, dispatchTickIfNeeded, engineStateVersion, isEnabled]);
+  }, [coins, dispatchTickIfNeeded, engineStateVersion, executableSources, isEnabled]);
 };

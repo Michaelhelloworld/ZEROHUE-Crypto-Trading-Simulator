@@ -31,7 +31,6 @@ import {
 import {
   applyReplayEventsInChronologicalOrder,
   applyReplayEventsToState,
-  CandleBar,
   dedupeAndSortCandles,
   hasStrategy,
   processFilledOrder,
@@ -54,11 +53,140 @@ const OFFLINE_FALLBACK_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const OFFLINE_SYMBOL_CONCURRENCY = 2;
 const OFFLINE_FETCH_RETRIES = 2;
 const INITIAL_REPLAY_MAX_AUTO_RETRIES = 3;
+const ONE_MINUTE_MS = 60_000;
+const ONE_HOUR_MS = 3_600_000;
+
+interface RawReplayCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 const getBinanceIntervalStepMs = (interval: '1m' | '1h') =>
-  interval === '1m' ? 60_000 : 3_600_000;
+  interval === '1m' ? ONE_MINUTE_MS : ONE_HOUR_MS;
 
 const getCoinbaseGranularityStepMs = (granularity: 60 | 3600) =>
-  granularity === 60 ? 60_000 : 3_600_000;
+  granularity === 60 ? ONE_MINUTE_MS : ONE_HOUR_MS;
+
+const alignReplayStartTimeToCandle = (replayStartTime: number, now: number) => {
+  const candleStepMs = now - replayStartTime < ONE_DAY_MS ? ONE_MINUTE_MS : ONE_HOUR_MS;
+  return Math.floor(replayStartTime / candleStepMs) * candleStepMs;
+};
+
+const getRecentReplayBoundary = (now: number) =>
+  Math.floor((now - ONE_DAY_MS) / ONE_MINUTE_MS) * ONE_MINUTE_MS;
+
+const pricesNearlyEqual = (left: number, right: number) => Math.abs(left - right) <= 1e-8;
+
+const buildSyntheticReplayCandle = (time: number, price: number): RawReplayCandle => ({
+  time,
+  open: price,
+  high: price,
+  low: price,
+  close: price,
+});
+
+const isValidRawReplayCandle = (candle: RawReplayCandle) => {
+  if (
+    !Number.isFinite(candle.time) ||
+    candle.time < 0 ||
+    !Number.isFinite(candle.open) ||
+    !Number.isFinite(candle.high) ||
+    !Number.isFinite(candle.low) ||
+    !Number.isFinite(candle.close)
+  ) {
+    return false;
+  }
+
+  if (candle.open <= 0 || candle.high <= 0 || candle.low <= 0 || candle.close <= 0) {
+    return false;
+  }
+
+  if (candle.low > candle.high) {
+    return false;
+  }
+
+  if (candle.high < Math.max(candle.open, candle.close)) {
+    return false;
+  }
+
+  if (candle.low > Math.min(candle.open, candle.close)) {
+    return false;
+  }
+
+  return true;
+};
+
+const normalizeFetchedReplayCandles = (
+  rawCandles: RawReplayCandle[],
+  stepMs: number,
+  startTime: number,
+  endTime: number
+): ReplayCandlesFetchResult => {
+  if (rawCandles.length === 0 || startTime > endTime) {
+    return { candles: [], failed: false };
+  }
+
+  const candlesByTime = new Map<number, RawReplayCandle>();
+  for (const candle of rawCandles) {
+    if (!isValidRawReplayCandle(candle)) {
+      return { candles: [], failed: true };
+    }
+
+    if (candle.time < startTime || candle.time > endTime) {
+      continue;
+    }
+
+    candlesByTime.set(candle.time, candle);
+  }
+
+  const sortedCandles = [...candlesByTime.values()].sort((left, right) => left.time - right.time);
+  if (sortedCandles.length === 0) {
+    return { candles: [], failed: false };
+  }
+
+  const normalizedCandles: RawReplayCandle[] = [];
+  const firstCandle = sortedCandles[0];
+  for (let time = startTime; time < firstCandle.time; time += stepMs) {
+    normalizedCandles.push(buildSyntheticReplayCandle(time, firstCandle.open));
+  }
+
+  let previousCandle: RawReplayCandle | null = null;
+  for (const candle of sortedCandles) {
+    if (previousCandle) {
+      const gapSteps = Math.floor((candle.time - previousCandle.time) / stepMs) - 1;
+      if (gapSteps > 0 && !pricesNearlyEqual(previousCandle.close, candle.open)) {
+        return { candles: [], failed: true };
+      }
+
+      for (let gapIndex = 1; gapIndex <= gapSteps; gapIndex += 1) {
+        normalizedCandles.push(
+          buildSyntheticReplayCandle(previousCandle.time + stepMs * gapIndex, previousCandle.close)
+        );
+      }
+    }
+
+    normalizedCandles.push(candle);
+    previousCandle = candle;
+  }
+
+  if (previousCandle) {
+    for (let time = previousCandle.time + stepMs; time <= endTime; time += stepMs) {
+      normalizedCandles.push(buildSyntheticReplayCandle(time, previousCandle.close));
+    }
+  }
+
+  return {
+    candles: normalizedCandles.map(({ time, high, low }) => ({ time, high, low })),
+    failed: false,
+  };
+};
+
+export const __offlineReplayFetchTestUtils = {
+  normalizeFetchedReplayCandles,
+};
 
 const fetchBinanceCandlesBySymbol = async (
   symbol: string,
@@ -68,7 +196,7 @@ const fetchBinanceCandlesBySymbol = async (
   endTime: number
 ): Promise<ReplayCandlesFetchResult> => {
   try {
-    const candles: CandleBar[] = [];
+    const candles: RawReplayCandle[] = [];
     const stepMs = getBinanceIntervalStepMs(interval);
     let pageStart = startTime;
 
@@ -94,10 +222,11 @@ const fetchBinanceCandlesBySymbol = async (
 
       for (const kline of klines) {
         const time = Number(kline[0]);
+        const open = parseFloat(kline[1]);
         const high = parseFloat(kline[2]);
         const low = parseFloat(kline[3]);
-        if (!Number.isFinite(time) || !Number.isFinite(high) || !Number.isFinite(low)) continue;
-        candles.push({ time, high, low });
+        const close = parseFloat(kline[4]);
+        candles.push({ time, open, high, low, close });
       }
 
       const lastOpenTime = Number(klines[klines.length - 1][0]);
@@ -108,7 +237,7 @@ const fetchBinanceCandlesBySymbol = async (
       if (klines.length < BINANCE_CANDLE_LIMIT) break;
     }
 
-    return { candles: dedupeAndSortCandles(candles), failed: false };
+    return normalizeFetchedReplayCandles(candles, stepMs, startTime, endTime);
   } catch (e) {
     console.error('Error fetching Binance candles by symbol', e);
     return { candles: [], failed: true };
@@ -122,7 +251,7 @@ const fetchCoinbaseCandlesBySymbol = async (
   endTime: number
 ): Promise<ReplayCandlesFetchResult> => {
   try {
-    const candles: CandleBar[] = [];
+    const candles: RawReplayCandle[] = [];
     const stepMs = getCoinbaseGranularityStepMs(granularity);
     let pageEnd = endTime;
 
@@ -149,10 +278,11 @@ const fetchCoinbaseCandlesBySymbol = async (
 
       for (const candle of rawCandles) {
         const time = Number(candle[0]) * 1000;
+        const open = Number(candle[3]);
+        const close = Number(candle[4]);
         const low = Number(candle[1]);
         const high = Number(candle[2]);
-        if (!Number.isFinite(time) || !Number.isFinite(high) || !Number.isFinite(low)) continue;
-        candles.push({ time, high, low });
+        candles.push({ time, open, high, low, close });
       }
 
       const oldestTime = Math.min(
@@ -167,7 +297,7 @@ const fetchCoinbaseCandlesBySymbol = async (
       if (pageStart === startTime) break;
     }
 
-    return { candles: dedupeAndSortCandles(candles), failed: false };
+    return normalizeFetchedReplayCandles(candles, stepMs, startTime, endTime);
   } catch (e) {
     console.error('Error fetching Coinbase candles by symbol', e);
     return { candles: [], failed: true };
@@ -185,6 +315,10 @@ export const useOfflineOrderExecution = (isHydrated = true) => {
   const binanceStatus = useStore((state) => state.binanceStatus);
   const coinbaseStatus = useStore((state) => state.coinbaseStatus);
   const replayControllerRef = useRef(createOfflineReplayControllerState());
+  const initialLastOnlineAtRef = useRef<Record<ReplaySource, number | null>>({
+    BINANCE: readLastOnlineAt('BINANCE'),
+    COINBASE: readLastOnlineAt('COINBASE'),
+  });
   const [isInitialReplaySettled, setIsInitialReplaySettled] = useState(false);
   const [initialReplayError, setInitialReplayError] = useState<InitialReplayErrorState | null>(
     null
@@ -300,12 +434,17 @@ export const useOfflineOrderExecution = (isHydrated = true) => {
         (holding) => !isDust(holding.amount) && hasStrategy(holding)
       );
       const now = Date.now();
-      const lastOnlineAtBySource: Record<ReplaySource, number | null> = {
-        BINANCE: readLastOnlineAt('BINANCE'),
-        COINBASE: readLastOnlineAt('COINBASE'),
-      };
+      const lastOnlineAtBySource = isInitialReplaySettled
+        ? {
+            BINANCE: readLastOnlineAt('BINANCE'),
+            COINBASE: readLastOnlineAt('COINBASE'),
+          }
+        : initialLastOnlineAtRef.current;
       const getReplayStartTime = (baseStartTime: number, source: ReplaySource) =>
-        resolveReplayStartTime(baseStartTime, lastOnlineAtBySource[source], now);
+        alignReplayStartTimeToCandle(
+          resolveReplayStartTime(baseStartTime, lastOnlineAtBySource[source], now),
+          now
+        );
 
       if (openOrders.length === 0 && triggerableHoldings.length === 0) {
         markReplaySourcesHandled(replaySources);
@@ -411,33 +550,30 @@ export const useOfflineOrderExecution = (isHydrated = true) => {
                   ...symbolOrderCandidates.map((candidate) => candidate.replayStartTime),
                   ...symbolHoldingCandidates.map((candidate) => candidate.replayStartTime),
                 ];
-                const recentStarts = symbolReplayStarts.filter(
-                  (startTime) => now - startTime < ONE_DAY_MS
-                );
-                const oldStarts = symbolReplayStarts.filter(
-                  (startTime) => now - startTime >= ONE_DAY_MS
-                );
+                const earliestReplayStart = Math.min(...symbolReplayStarts);
+                const recentReplayBoundary = getRecentReplayBoundary(now);
+                const hasOldReplayWindow = earliestReplayStart < recentReplayBoundary;
+                const recentReplayStart = Math.max(earliestReplayStart, recentReplayBoundary);
 
                 const recentFetchResult =
-                  recentStarts.length > 0
+                  recentReplayStart <= now
                     ? await fetchBinanceCandlesBySymbol(
                         symbol,
                         config,
                         '1m',
-                        Math.min(...recentStarts),
+                        recentReplayStart,
                         now
                       )
                     : { candles: [], failed: false };
-                const oldFetchResult =
-                  oldStarts.length > 0
-                    ? await fetchBinanceCandlesBySymbol(
-                        symbol,
-                        config,
-                        '1h',
-                        Math.min(...oldStarts),
-                        now
-                      )
-                    : { candles: [], failed: false };
+                const oldFetchResult = hasOldReplayWindow
+                  ? await fetchBinanceCandlesBySymbol(
+                      symbol,
+                      config,
+                      '1h',
+                      earliestReplayStart,
+                      recentReplayStart - 1
+                    )
+                  : { candles: [], failed: false };
 
                 const hadFetchFailure = recentFetchResult.failed || oldFetchResult.failed;
                 if (hadFetchFailure) {
@@ -492,21 +628,23 @@ export const useOfflineOrderExecution = (isHydrated = true) => {
                   ...symbolOrderCandidates.map((candidate) => candidate.replayStartTime),
                   ...symbolHoldingCandidates.map((candidate) => candidate.replayStartTime),
                 ];
-                const recentStarts = symbolReplayStarts.filter(
-                  (startTime) => now - startTime < ONE_DAY_MS
-                );
-                const oldStarts = symbolReplayStarts.filter(
-                  (startTime) => now - startTime >= ONE_DAY_MS
-                );
+                const earliestReplayStart = Math.min(...symbolReplayStarts);
+                const recentReplayBoundary = getRecentReplayBoundary(now);
+                const hasOldReplayWindow = earliestReplayStart < recentReplayBoundary;
+                const recentReplayStart = Math.max(earliestReplayStart, recentReplayBoundary);
 
                 const recentFetchResult =
-                  recentStarts.length > 0
-                    ? await fetchCoinbaseCandlesBySymbol(symbol, 60, Math.min(...recentStarts), now)
+                  recentReplayStart <= now
+                    ? await fetchCoinbaseCandlesBySymbol(symbol, 60, recentReplayStart, now)
                     : { candles: [], failed: false };
-                const oldFetchResult =
-                  oldStarts.length > 0
-                    ? await fetchCoinbaseCandlesBySymbol(symbol, 3600, Math.min(...oldStarts), now)
-                    : { candles: [], failed: false };
+                const oldFetchResult = hasOldReplayWindow
+                  ? await fetchCoinbaseCandlesBySymbol(
+                      symbol,
+                      3600,
+                      earliestReplayStart,
+                      recentReplayStart - 1
+                    )
+                  : { candles: [], failed: false };
 
                 const hadFetchFailure = recentFetchResult.failed || oldFetchResult.failed;
                 if (hadFetchFailure) {

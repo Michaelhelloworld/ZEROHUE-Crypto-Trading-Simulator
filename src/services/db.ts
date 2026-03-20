@@ -18,10 +18,18 @@ export interface ZEROHUESchema {
       lastUpdated: number;
     };
   };
+  app_meta: {
+    key: string;
+    value: {
+      key: string;
+      value: string;
+      updatedAt: number;
+    };
+  };
 }
 
 const DB_NAME = 'zerohue_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase<ZEROHUESchema>> | null = null;
 
@@ -37,6 +45,9 @@ function initDB(): Promise<IDBPDatabase<ZEROHUESchema>> {
         }
         if (!db.objectStoreNames.contains('market_history')) {
           db.createObjectStore('market_history', { keyPath: 'coinId' });
+        }
+        if (!db.objectStoreNames.contains('app_meta')) {
+          db.createObjectStore('app_meta', { keyPath: 'key' });
         }
       },
     }).catch((error) => {
@@ -57,6 +68,11 @@ export const dbService = {
   async getAll<T extends keyof ZEROHUESchema>(storeName: T) {
     const db = await initDB();
     return db.getAll(storeName);
+  },
+
+  async get<T extends keyof ZEROHUESchema>(storeName: T, key: ZEROHUESchema[T]['key']) {
+    const db = await initDB();
+    return db.get(storeName, key);
   },
 
   async put<T extends keyof ZEROHUESchema>(storeName: T, value: ZEROHUESchema[T]['value']) {
@@ -133,9 +149,10 @@ export const dbService = {
 
   async clearSimulatorState() {
     const db = await initDB();
-    const tx = db.transaction(['orders', 'transactions'], 'readwrite');
+    const tx = db.transaction(['orders', 'transactions', 'app_meta'], 'readwrite');
     tx.objectStore('orders').clear();
     tx.objectStore('transactions').clear();
+    tx.objectStore('app_meta').clear();
     await tx.done;
     return true;
   },

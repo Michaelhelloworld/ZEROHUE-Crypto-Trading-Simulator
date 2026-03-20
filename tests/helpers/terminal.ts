@@ -189,6 +189,85 @@ export const waitForOrdersPersisted = async (page: Page) => {
     .toBe(true);
 };
 
+export const waitForPortfolioPersisted = async (page: Page) => {
+  const hasCommittedPortfolioSnapshot = async () =>
+    page.evaluate(async () => {
+      const rawPortfolio = localStorage.getItem('zerohue_portfolio');
+      if (!rawPortfolio) return false;
+
+      let parsedEnvelope: {
+        version?: number;
+        commitVersion?: number;
+      } | null = null;
+      try {
+        parsedEnvelope = JSON.parse(rawPortfolio) as {
+          version?: number;
+          commitVersion?: number;
+        };
+      } catch {
+        return false;
+      }
+
+      if (
+        !parsedEnvelope ||
+        parsedEnvelope.version !== 1 ||
+        typeof parsedEnvelope.commitVersion !== 'number' ||
+        !Number.isFinite(parsedEnvelope.commitVersion) ||
+        parsedEnvelope.commitVersion <= 0
+      ) {
+        return false;
+      }
+
+      const commitMeta = await new Promise<{
+        key: string;
+        value: string;
+        updatedAt: number;
+      } | null>((resolve, reject) => {
+        const request = indexedDB.open('zerohue_db');
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction('app_meta', 'readonly');
+          const appMetaStore = tx.objectStore('app_meta');
+          const getRequest = appMetaStore.get('portfolio_snapshot_commit');
+
+          getRequest.onerror = () => {
+            db.close();
+            reject(getRequest.error);
+          };
+
+          getRequest.onsuccess = () => {
+            const result = getRequest.result ?? null;
+            db.close();
+            resolve(result);
+          };
+        };
+      });
+
+      if (!commitMeta) return false;
+
+      try {
+        const parsedCommit = JSON.parse(commitMeta.value) as {
+          version?: number;
+          latestCommitVersion?: number;
+          status?: string;
+        };
+
+        return (
+          parsedCommit.version === 1 &&
+          parsedCommit.status === 'committed' &&
+          parsedCommit.latestCommitVersion === parsedEnvelope.commitVersion
+        );
+      } catch {
+        return false;
+      }
+    });
+
+  await expect.poll(hasCommittedPortfolioSnapshot, { timeout: 20_000 }).toBe(true);
+  await page.waitForTimeout(500);
+  await expect.poll(hasCommittedPortfolioSnapshot, { timeout: 5_000 }).toBe(true);
+};
+
 export const getCoinPrice = async (page: Page, coinId: string) =>
   page.evaluate((targetCoinId) => {
     const store = window.__ZEROHUE_STORE__;
@@ -260,6 +339,19 @@ export const gotoTrade = async (page: Page, coinId: string) => {
   await acceptDisclaimerIfPresent(page);
   await waitForStoreReady(page);
   await ensureTradePanelVisible(page);
+  await expect
+    .poll(
+      () =>
+        page.evaluate((targetCoinId) => {
+          const store = window.__ZEROHUE_STORE__;
+          if (!store) return 0;
+          const coin = store.getState().coins.find((item) => item.id === targetCoinId);
+          return coin?.price ?? 0;
+        }, coinId),
+      { timeout: 20_000 }
+    )
+    .toBeGreaterThan(0);
+  await ensureTradePanelVisible(page);
   await expect(page.getByLabel('Trade amount input')).toBeVisible({ timeout: 20_000 });
 };
 
@@ -268,11 +360,8 @@ export const submitTradeAndWaitForPortfolio = async (page: Page, tradeType: 'BUY
   await expect(confirmButton).toBeVisible({ timeout: 20_000 });
   await expect(confirmButton).toBeEnabled({ timeout: 20_000 });
   await confirmButton.scrollIntoViewIfNeeded().catch(() => {});
-
-  await Promise.all([
-    page.waitForURL('**/portfolio', { timeout: 30_000 }),
-    confirmButton.click({ force: true }),
-  ]);
+  await confirmButton.click({ force: true });
+  await expect(page).toHaveURL(/\/portfolio$/, { timeout: 30_000 });
 };
 
 export const selectTradeOrderType = async (page: Page, orderType: 'MARKET' | 'LIMIT') => {

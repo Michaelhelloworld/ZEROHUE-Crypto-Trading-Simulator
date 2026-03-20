@@ -1,6 +1,7 @@
 import { expect, test, Page } from '@playwright/test';
 import {
   confirmCancelFirstOrder,
+  ensureTradePanelVisible,
   getCoinPrice,
   getSnapshot,
   gotoTerminal,
@@ -9,6 +10,7 @@ import {
   seedAcceptedDisclaimer,
   setCoinPrice,
   submitTradeAndWaitForPortfolio,
+  waitForPortfolioPersisted,
   waitForOrdersPersisted,
   waitForStoreReady,
 } from './helpers/terminal';
@@ -16,6 +18,7 @@ import {
 const openOrdersPage = async (page: Page) => {
   // Wait for IDB persistence before using a full navigation, otherwise the
   // reload can re-hydrate stale orders while useIDBSync is still debounced.
+  await waitForPortfolioPersisted(page);
   await waitForOrdersPersisted(page);
   await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await waitForStoreReady(page);
@@ -52,8 +55,12 @@ test.describe('ZEROHUE order lifecycle', () => {
     });
 
     const initial = await getSnapshot(page);
-
-    await gotoTrade(page, 'bitcoin');
+    const marketTradeButton = page.getByRole('button', { name: /^Trade$/i }).first();
+    await marketTradeButton.scrollIntoViewIfNeeded().catch(() => {});
+    await marketTradeButton.click({ force: true });
+    await expect(page).toHaveURL(/\/trade\/bitcoin$/, { timeout: 20_000 });
+    await waitForStoreReady(page);
+    await ensureTradePanelVisible(page);
     await expect
       .poll(async () => getCoinPrice(page, 'bitcoin'), { timeout: 20_000 })
       .toBeGreaterThan(0);

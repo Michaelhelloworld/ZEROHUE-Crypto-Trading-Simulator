@@ -4,6 +4,8 @@ import { renderHook, act } from '@testing-library/react';
 import { useTradeExecution } from '../useTradeExecution';
 import { Coin, Order, Portfolio } from '../../types';
 import toast from 'react-hot-toast';
+import { LOCAL_PERSISTENCE_EPOCH_KEY } from '../../constants/storage';
+import { usePersistenceEpochStore } from '../../store/usePersistenceEpochStore';
 import * as useStoreModule from '../../store/useStore';
 
 vi.mock('react-hot-toast', () => ({
@@ -26,6 +28,8 @@ describe('useTradeExecution', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    localStorage.clear();
+    usePersistenceEpochStore.getState().reset();
 
     mockState = {
       coins: [createCoin()],
@@ -76,6 +80,23 @@ describe('useTradeExecution', () => {
   // --- Market Order Tests ---
 
   describe('Market Buy', () => {
+    it('blocks new trades after another tab invalidates local persistence', () => {
+      localStorage.setItem(LOCAL_PERSISTENCE_EPOCH_KEY, '1');
+      usePersistenceEpochStore.getState().initializeTabEpoch(1);
+      localStorage.setItem(LOCAL_PERSISTENCE_EPOCH_KEY, '2');
+      const { result } = renderTradeHook();
+
+      act(() => {
+        expect(result.current.handleExecuteTrade('bitcoin', 'BUY', 0.5, 'MARKET')).toBe(false);
+      });
+
+      expect(mockState.setTransactions).not.toHaveBeenCalled();
+      expect(mockState.setPortfolio).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining('Reload this tab before continuing')
+      );
+    });
+
     it('should execute market BUY and update portfolio', () => {
       const { result } = renderTradeHook();
 

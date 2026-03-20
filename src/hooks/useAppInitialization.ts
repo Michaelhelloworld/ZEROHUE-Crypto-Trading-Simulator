@@ -4,9 +4,13 @@ import { useIDBSync } from './useIDBSync';
 import { useMarketData } from './useMarketData';
 import { useOfflineOrderExecution } from './useOfflineOrderExecution';
 import { useMarketEngine } from './useMarketEngine';
-import { safeStorage } from '../utils/safeStorage';
+import { usePersistenceEpochGuard } from './usePersistenceEpochGuard';
+import { usePersistenceEpochStore } from '../store/usePersistenceEpochStore';
 import { Order, Portfolio, Transaction } from '../types';
 import { hydratePersistedAppState, PersistedAppHydrationError } from '../utils/appPersistence';
+import { usePersistenceSyncStore } from '../store/usePersistenceSyncStore';
+import { persistLocalPortfolioSnapshot } from '../utils/localSimulatorState';
+import { getPersistenceInvalidationMessage } from '../utils/persistenceEpoch';
 import {
   AppInitializationHydrationError,
   AppInitializationReplayError,
@@ -19,12 +23,25 @@ import {
  * Handles single-time hydration, binds persistence layers, and spins up engines.
  */
 export const useAppInitialization = () => {
+  usePersistenceEpochGuard();
+
   const setPortfolio = useStore((state) => state.setPortfolio);
   const setOrders = useStore((state) => state.setOrders);
   const setTransactions = useStore((state) => state.setTransactions);
   const portfolio = useStore((state) => state.portfolio);
   const orders = useStore((state) => state.orders);
   const transactions = useStore((state) => state.transactions);
+  const isCurrentTabWritable = usePersistenceEpochStore((state) => state.isCurrentTabWritable);
+  const crossTabInvalidationMessage = usePersistenceEpochStore(
+    (state) => state.invalidationMessage
+  );
+  const resetPersistenceIssues = usePersistenceSyncStore((state) => state.resetIssues);
+  const markPortfolioPersistenceHealthy = usePersistenceSyncStore(
+    (state) => state.markStoreHealthy
+  );
+  const markPortfolioPersistenceDegraded = usePersistenceSyncStore(
+    (state) => state.markStoreDegraded
+  );
   const [isHydrated, setIsHydrated] = useState(false);
   const [hydrationError, setHydrationError] = useState<AppInitializationHydrationError | null>(
     null
@@ -32,10 +49,11 @@ export const useAppInitialization = () => {
   const [hydrationAttempt, setHydrationAttempt] = useState(0);
 
   const retryHydration = useCallback(() => {
+    resetPersistenceIssues();
     setHydrationError(null);
     setIsHydrated(false);
     setHydrationAttempt((previous) => previous + 1);
-  }, []);
+  }, [resetPersistenceIssues]);
 
   // 1. Initial Hydration Phase
   useEffect(() => {
@@ -58,7 +76,10 @@ export const useAppInitialization = () => {
           applyTransactions,
         });
 
-        if (mounted) setIsHydrated(true);
+        if (mounted) {
+          resetPersistenceIssues();
+          setIsHydrated(true);
+        }
       } catch (err) {
         console.error('Hydration failed', err);
         if (!mounted) return;
@@ -84,14 +105,55 @@ export const useAppInitialization = () => {
     return () => {
       mounted = false;
     };
-  }, [hydrationAttempt, setOrders, setPortfolio, setTransactions]);
+  }, [hydrationAttempt, resetPersistenceIssues, setOrders, setPortfolio, setTransactions]);
 
   // 2. Persist Portfolio to LocalStorage continually
   useEffect(() => {
     if (isHydrated) {
-      safeStorage.setItem('zerohue_portfolio', JSON.stringify(portfolio));
+      if (!isCurrentTabWritable) {
+        markPortfolioPersistenceDegraded('portfolio', 1, getPersistenceInvalidationMessage());
+        return;
+      }
+
+      let isCancelled = false;
+
+      void persistLocalPortfolioSnapshot(portfolio)
+        .then((result) => {
+          if (isCancelled) return;
+
+          if (result.ok) {
+            markPortfolioPersistenceHealthy('portfolio');
+            return;
+          }
+
+          markPortfolioPersistenceDegraded(
+            'portfolio',
+            1,
+            'Local portfolio persistence is unavailable. Refreshing now could restore an older account snapshot.'
+          );
+        })
+        .catch((error) => {
+          console.error('Failed to persist local portfolio snapshot', error);
+          if (isCancelled) return;
+
+          markPortfolioPersistenceDegraded(
+            'portfolio',
+            1,
+            'Local portfolio persistence is unavailable. Refreshing now could restore an older account snapshot.'
+          );
+        });
+
+      return () => {
+        isCancelled = true;
+      };
     }
-  }, [portfolio, isHydrated]);
+  }, [
+    isCurrentTabWritable,
+    isHydrated,
+    markPortfolioPersistenceDegraded,
+    markPortfolioPersistenceHealthy,
+    portfolio,
+  ]);
 
   // 3. Persist Order and Transaction Arrays to IndexedDB
   useIDBSync('orders', orders, isHydrated);
@@ -111,7 +173,7 @@ export const useAppInitialization = () => {
     isInitialReplaySettled,
     initialReplayError,
   });
-  useMarketEngine(isAppInitializationReady(initializationStage));
+  useMarketEngine(isAppInitializationReady(initializationStage) && isCurrentTabWritable);
 
   return {
     initializationStage,
@@ -122,5 +184,7 @@ export const useAppInitialization = () => {
     initialReplayError,
     retryInitialReplay,
     skipInitialReplay,
+    isCurrentTabWritable,
+    crossTabInvalidationMessage,
   };
 };

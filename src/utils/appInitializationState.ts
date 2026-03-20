@@ -6,7 +6,12 @@ export interface AppInitializationReplayError {
 }
 
 export interface AppInitializationHydrationError {
-  code: 'orders_unavailable' | 'transactions_unavailable' | 'unexpected';
+  code:
+    | 'orders_unavailable'
+    | 'transactions_unavailable'
+    | 'portfolio_snapshot_stale'
+    | 'portfolio_unavailable'
+    | 'unexpected';
   message: string;
 }
 

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { useOfflineOrderExecution } from '../useOfflineOrderExecution';
+import {
+  __offlineReplayFetchTestUtils,
+  useOfflineOrderExecution,
+} from '../useOfflineOrderExecution';
 import {
   LAST_ONLINE_AT_KEY,
   LAST_ONLINE_AT_BINANCE_KEY,
@@ -87,7 +90,7 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
           amount: 1,
           limitPrice: 100,
           total: 100,
-          timestamp: 1,
+          timestamp: Date.now() - 10 * 60 * 1000,
           status: 'OPEN',
         },
       ],
@@ -130,6 +133,86 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
     });
   });
 
+  it('rejects malformed replay candles before they can drive offline fills', () => {
+    const malformedCandlesResult = __offlineReplayFetchTestUtils.normalizeFetchedReplayCandles(
+      [
+        {
+          time: 0,
+          open: 100,
+          high: 90,
+          low: 110,
+          close: 100,
+        },
+      ],
+      60_000,
+      0,
+      0
+    );
+
+    expect(malformedCandlesResult).toEqual({
+      candles: [],
+      failed: true,
+    });
+  });
+
+  it('fills no-trade replay gaps with carry-forward candles but rejects discontinuous missing buckets', () => {
+    const filledGapResult = __offlineReplayFetchTestUtils.normalizeFetchedReplayCandles(
+      [
+        {
+          time: 0,
+          open: 100,
+          high: 105,
+          low: 95,
+          close: 101,
+        },
+        {
+          time: 120_000,
+          open: 101,
+          high: 103,
+          low: 100,
+          close: 102,
+        },
+      ],
+      60_000,
+      0,
+      120_000
+    );
+
+    expect(filledGapResult.failed).toBe(false);
+    expect(filledGapResult.candles).toEqual([
+      { time: 0, high: 105, low: 95 },
+      { time: 60_000, high: 101, low: 101 },
+      { time: 120_000, high: 103, low: 100 },
+    ]);
+
+    const discontinuousGapResult = __offlineReplayFetchTestUtils.normalizeFetchedReplayCandles(
+      [
+        {
+          time: 0,
+          open: 100,
+          high: 105,
+          low: 95,
+          close: 101,
+        },
+        {
+          time: 120_000,
+          open: 110,
+          high: 112,
+          low: 109,
+          close: 111,
+        },
+      ],
+      60_000,
+      0,
+      120_000
+    );
+
+    expect(discontinuousGapResult).toEqual({
+      candles: [],
+      failed: true,
+    });
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -143,10 +226,17 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
   });
 
   it('bumps engineStateVersion when replay applies fills into the store', async () => {
+    const candleTime = Date.now() - 60_000;
     vi.mocked(fetchWithRetry).mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue([[2000, '0', '120', '90', '0']]),
+      json: vi.fn().mockResolvedValue([[candleTime, '100', '120', '90', '110']]),
     } as unknown as Awaited<ReturnType<typeof fetchWithRetry>>);
+    mockState.orders = [
+      {
+        ...mockState.orders[0],
+        timestamp: candleTime,
+      },
+    ];
 
     renderHook(() => useOfflineOrderExecution(true));
 
@@ -243,9 +333,11 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
   }, 10000);
 
   it('uses the source-specific last-online timestamp for Binance replay windows', async () => {
-    localStorage.setItem(LAST_ONLINE_AT_KEY, '9000');
-    localStorage.setItem(LAST_ONLINE_AT_BINANCE_KEY, '1000');
-    localStorage.setItem(LAST_ONLINE_AT_COINBASE_KEY, '9000');
+    const sourceSpecificStart = Date.now() - 5 * 60_000 - 12_345;
+    const expectedStartTime = Math.floor(sourceSpecificStart / 60_000) * 60_000;
+    localStorage.setItem(LAST_ONLINE_AT_KEY, String(sourceSpecificStart + 30_000));
+    localStorage.setItem(LAST_ONLINE_AT_BINANCE_KEY, String(sourceSpecificStart));
+    localStorage.setItem(LAST_ONLINE_AT_COINBASE_KEY, String(sourceSpecificStart + 30_000));
 
     renderHook(() => useOfflineOrderExecution(true));
 
@@ -254,22 +346,80 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
     });
 
     const [firstUrl] = vi.mocked(fetchWithRetry).mock.calls[0];
-    expect(String(firstUrl)).toContain('startTime=1000');
+    expect(String(firstUrl)).toContain(`startTime=${expectedStartTime}`);
+  });
+
+  it('captures the initial last-online snapshot before the startup session can overwrite it', async () => {
+    const sourceSpecificStart = Date.now() - 5 * 60_000 - 12_345;
+    const expectedStartTime = Math.floor(sourceSpecificStart / 60_000) * 60_000;
+    localStorage.setItem(LAST_ONLINE_AT_KEY, String(sourceSpecificStart + 30_000));
+    localStorage.setItem(LAST_ONLINE_AT_BINANCE_KEY, String(sourceSpecificStart));
+    localStorage.setItem(LAST_ONLINE_AT_COINBASE_KEY, String(sourceSpecificStart + 30_000));
+
+    renderHook(() => useOfflineOrderExecution(true));
+    localStorage.setItem(LAST_ONLINE_AT_BINANCE_KEY, String(Date.now()));
+
+    await waitFor(() => {
+      expect(fetchWithRetry).toHaveBeenCalledTimes(1);
+    });
+
+    const [firstUrl] = vi.mocked(fetchWithRetry).mock.calls[0];
+    expect(String(firstUrl)).toContain(`startTime=${expectedStartTime}`);
   });
 
   it('does not fall back to the global last-online timestamp once source-aware keys exist', async () => {
     localStorage.setItem(LAST_ONLINE_AT_KEY, '9000');
     localStorage.setItem(LAST_ONLINE_AT_COINBASE_KEY, '1000');
+    mockState.orders = [
+      {
+        ...mockState.orders[0],
+        timestamp: 1,
+      },
+    ];
 
     renderHook(() => useOfflineOrderExecution(true));
 
     await waitFor(() => {
-      expect(fetchWithRetry).toHaveBeenCalledTimes(1);
+      expect(fetchWithRetry).toHaveBeenCalledTimes(2);
     });
 
-    const [firstUrl] = vi.mocked(fetchWithRetry).mock.calls[0];
-    expect(String(firstUrl)).toContain('startTime=1');
-    expect(String(firstUrl)).not.toContain('startTime=9000');
+    const requestUrls = vi.mocked(fetchWithRetry).mock.calls.map(([url]) => String(url));
+    expect(
+      requestUrls.some((url) => url.includes('interval=1h') && url.includes('startTime=0'))
+    ).toBe(true);
+    expect(requestUrls.some((url) => url.includes('startTime=9000'))).toBe(false);
+  });
+
+  it('rounds long replay windows down to the start of the hour bucket', async () => {
+    const oldStart = Date.now() - (25 * 60 * 60 * 1000 + 12_345);
+    const expectedHourStartTime = Math.floor(oldStart / (60 * 60 * 1000)) * (60 * 60 * 1000);
+    const expectedRecentStartTime =
+      Math.floor((Date.now() - 24 * 60 * 60 * 1000) / (60 * 1000)) * (60 * 1000);
+    localStorage.setItem(LAST_ONLINE_AT_BINANCE_KEY, String(oldStart));
+    mockState.orders = [
+      {
+        ...mockState.orders[0],
+        timestamp: 1,
+      },
+    ];
+
+    renderHook(() => useOfflineOrderExecution(true));
+
+    await waitFor(() => {
+      expect(fetchWithRetry).toHaveBeenCalledTimes(2);
+    });
+
+    const requestUrls = vi.mocked(fetchWithRetry).mock.calls.map(([url]) => String(url));
+    expect(
+      requestUrls.some(
+        (url) => url.includes('interval=1h') && url.includes(`startTime=${expectedHourStartTime}`)
+      )
+    ).toBe(true);
+    expect(
+      requestUrls.some(
+        (url) => url.includes('interval=1m') && url.includes(`startTime=${expectedRecentStartTime}`)
+      )
+    ).toBe(true);
   });
 
   it('still replays Coinbase orders when Binance setup fails', async () => {
@@ -335,6 +485,10 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
   });
 
   it('retries a source when a symbol-level candle fetch fails before applying replay events', async () => {
+    const currentMinuteStart = Math.floor(Date.now() / (60 * 1000)) * (60 * 1000);
+    const btcCandleTime = currentMinuteStart - 2 * 60 * 1000;
+    const ethCandleTime = currentMinuteStart - 60 * 1000;
+
     mockState.coins = [
       {
         id: 'bitcoin',
@@ -364,7 +518,7 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
         amount: 1,
         limitPrice: 100,
         total: 100,
-        timestamp: 1,
+        timestamp: btcCandleTime,
         status: 'OPEN',
       },
       {
@@ -375,7 +529,7 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
         amount: 1,
         limitPrice: 200,
         total: 200,
-        timestamp: 1,
+        timestamp: ethCandleTime,
         status: 'OPEN',
       },
     ] as AppState['orders'];
@@ -386,7 +540,7 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
       if (requestUrl.includes('symbol=BTCUSDT')) {
         return Promise.resolve({
           ok: true,
-          json: vi.fn().mockResolvedValue([[2000, '0', '120', '90', '0']]),
+          json: vi.fn().mockResolvedValue([[btcCandleTime, '100', '120', '90', '110']]),
         } as unknown as Awaited<ReturnType<typeof fetchWithRetry>>);
       }
       if (requestUrl.includes('symbol=ETHUSDT')) {
@@ -396,7 +550,7 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
         }
         return Promise.resolve({
           ok: true,
-          json: vi.fn().mockResolvedValue([[3000, '0', '240', '180', '0']]),
+          json: vi.fn().mockResolvedValue([[ethCandleTime, '200', '240', '180', '220']]),
         } as unknown as Awaited<ReturnType<typeof fetchWithRetry>>);
       }
       return Promise.resolve({
@@ -422,12 +576,19 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
     );
 
     expect(mockState.transactions.map((tx) => tx.coinSymbol)).toEqual(['ETH', 'BTC']);
-    expect(mockState.transactions.map((tx) => tx.timestamp)).toEqual([3000, 2000]);
+    expect(mockState.transactions.map((tx) => tx.timestamp)).toEqual([
+      ethCandleTime,
+      btcCandleTime,
+    ]);
 
     consoleSpy.mockRestore();
   });
 
   it('prepends offline replay transactions newest-first after chronological application', async () => {
+    const currentMinuteStart = Math.floor(Date.now() / (60 * 1000)) * (60 * 1000);
+    const btcCandleTime = currentMinuteStart - 2 * 60 * 1000;
+    const coinbaseCandleTime = currentMinuteStart - 60 * 1000;
+
     mockState.coins = [
       {
         id: 'bitcoin',
@@ -457,7 +618,7 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
         amount: 1,
         limitPrice: 100,
         total: 100,
-        timestamp: 1,
+        timestamp: btcCandleTime,
         status: 'OPEN',
       },
       {
@@ -468,7 +629,7 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
         amount: 10,
         limitPrice: 0.05,
         total: 0.5,
-        timestamp: 1,
+        timestamp: coinbaseCandleTime,
         status: 'OPEN',
       },
     ] as AppState['orders'];
@@ -477,13 +638,13 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
       if (requestUrl.includes('symbol=BTCUSDT')) {
         return Promise.resolve({
           ok: true,
-          json: vi.fn().mockResolvedValue([[2000, '0', '120', '90', '0']]),
+          json: vi.fn().mockResolvedValue([[btcCandleTime, '100', '120', '90', '110']]),
         } as unknown as Awaited<ReturnType<typeof fetchWithRetry>>);
       }
       if (requestUrl.includes('products/WLFI-USD/candles')) {
         return Promise.resolve({
           ok: true,
-          json: vi.fn().mockResolvedValue([[1, 0.01, 0.08, 0, 0, 0]]),
+          json: vi.fn().mockResolvedValue([[coinbaseCandleTime / 1000, 0.01, 0.08, 0.05, 0.06, 0]]),
         } as unknown as Awaited<ReturnType<typeof fetchWithRetry>>);
       }
       return Promise.resolve({
@@ -498,8 +659,11 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
       expect(mockState.transactions).toHaveLength(2);
     });
 
-    expect(mockState.transactions.map((tx) => tx.coinSymbol)).toEqual(['BTC', 'WLFI']);
-    expect(mockState.transactions.map((tx) => tx.timestamp)).toEqual([2000, 1000]);
+    expect(mockState.transactions.map((tx) => tx.coinSymbol)).toEqual(['WLFI', 'BTC']);
+    expect(mockState.transactions.map((tx) => tx.timestamp)).toEqual([
+      coinbaseCandleTime,
+      btcCandleTime,
+    ]);
   });
 
   it('replays each source independently when they reconnect at different times', async () => {
@@ -532,7 +696,7 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
         amount: 1,
         limitPrice: 100,
         total: 100,
-        timestamp: 1,
+        timestamp: Date.now() - 5 * 60 * 1000,
         status: 'OPEN',
       },
       {
@@ -543,7 +707,7 @@ describe('useOfflineOrderExecution reconnect behavior', () => {
         amount: 10,
         limitPrice: 0.09,
         total: 0.9,
-        timestamp: 1,
+        timestamp: Date.now() - 5 * 60 * 1000,
         status: 'OPEN',
       },
     ] as AppState['orders'];

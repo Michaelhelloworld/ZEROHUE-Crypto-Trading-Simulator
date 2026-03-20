@@ -3,15 +3,28 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { useAppInitialization } from '../useAppInitialization';
 import * as useStoreModule from '../../store/useStore';
 import { AppState } from '../../store/useStore';
+import { usePersistenceSyncStore } from '../../store/usePersistenceSyncStore';
+import { usePersistenceEpochStore } from '../../store/usePersistenceEpochStore';
 import { dbService } from '../../services/db';
+import {
+  LOCAL_PORTFOLIO_COMMIT_META_KEY,
+  LOCAL_PERSISTENCE_TRANSITION_COMMIT_META_KEY,
+  LOCAL_PERSISTENCE_TRANSITION_STORAGE_KEY,
+  stageLocalPersistenceTransition,
+} from '../../utils/localSimulatorState';
 import * as offlineExecutionModule from '../useOfflineOrderExecution';
 import * as marketEngineModule from '../useMarketEngine';
 
 vi.mock('../../services/db', () => ({
   dbService: {
+    get: vi.fn().mockResolvedValue(undefined),
+    put: vi.fn().mockResolvedValue('meta-key'),
     pruneHistory: vi.fn().mockResolvedValue(undefined),
     getAll: vi.fn().mockResolvedValue([]),
     replaceAll: vi.fn().mockResolvedValue(true),
+    clear: vi.fn().mockResolvedValue(undefined),
+    clearSimulatorState: vi.fn().mockResolvedValue(true),
+    resetLocalPersistence: vi.fn().mockResolvedValue(true),
   },
 }));
 
@@ -26,6 +39,10 @@ describe('useAppInitialization resilience', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    usePersistenceSyncStore.getState().resetIssues();
+    usePersistenceEpochStore.getState().reset();
+    vi.mocked(dbService.get).mockResolvedValue(undefined);
+    vi.mocked(dbService.put).mockResolvedValue('meta-key');
 
     mockState = {
       coins: [],
@@ -138,6 +155,113 @@ describe('useAppInitialization resilience', () => {
     });
   });
 
+  it('resets degraded persistence issues after hydration succeeds', async () => {
+    usePersistenceSyncStore
+      .getState()
+      .markStoreDegraded('orders', 5, 'orders IndexedDB write failed repeatedly');
+
+    vi.mocked(offlineExecutionModule.useOfflineOrderExecution).mockReturnValue({
+      isInitialReplaySettled: true,
+      initialReplayError: null,
+      retryInitialReplay: vi.fn(),
+      skipInitialReplay: vi.fn(),
+    });
+
+    renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(usePersistenceSyncStore.getState().issues.orders.status).toBe('healthy');
+      expect(usePersistenceSyncStore.getState().issues.orders.failureCount).toBe(0);
+      expect(usePersistenceSyncStore.getState().issues.orders.message).toBeNull();
+    });
+  });
+
+  it('resumes a staged local persistence transition before hydrating the app state', async () => {
+    const nextPortfolio = {
+      balance: 42000,
+      initialBalance: 42000,
+      holdings: [],
+      peakBalance: 42000,
+      historicalMDD: 0,
+      grossProfit: 0,
+      grossLoss: 0,
+      validTradesCount: 0,
+    };
+
+    localStorage.setItem('zerohue_portfolio', JSON.stringify(mockState.portfolio));
+    localStorage.setItem('zerohue_orders', JSON.stringify([{ id: 'legacy-order' }]));
+    stageLocalPersistenceTransition({
+      version: 1,
+      action: 'clear_orders',
+      nextPortfolio,
+    });
+
+    vi.mocked(offlineExecutionModule.useOfflineOrderExecution).mockReturnValue({
+      isInitialReplaySettled: true,
+      initialReplayError: null,
+      retryInitialReplay: vi.fn(),
+      skipInitialReplay: vi.fn(),
+    });
+
+    renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(dbService.clear).toHaveBeenCalledWith('orders');
+      expect(mockState.portfolio).toEqual(nextPortfolio);
+      expect(localStorage.getItem('zerohue_orders')).toBeNull();
+      expect(localStorage.getItem(LOCAL_PERSISTENCE_TRANSITION_STORAGE_KEY)).toBeNull();
+    });
+  });
+
+  it('clears an already-committed transition journal without replaying destructive work again', async () => {
+    const nextPortfolio = {
+      balance: 42000,
+      initialBalance: 42000,
+      holdings: [],
+      peakBalance: 42000,
+      historicalMDD: 0,
+      grossProfit: 0,
+      grossLoss: 0,
+      validTradesCount: 0,
+    };
+
+    localStorage.setItem('zerohue_portfolio', JSON.stringify(nextPortfolio));
+    stageLocalPersistenceTransition({
+      version: 1,
+      action: 'clear_orders',
+      nextPortfolio,
+    });
+    const stagedTransition = JSON.parse(
+      localStorage.getItem(LOCAL_PERSISTENCE_TRANSITION_STORAGE_KEY) || 'null'
+    ) as { id: string } | null;
+    expect(stagedTransition?.id).toBeTruthy();
+
+    vi.mocked(dbService.get).mockImplementation(async (_storeName, key) => {
+      if (key === LOCAL_PERSISTENCE_TRANSITION_COMMIT_META_KEY) {
+        return {
+          key,
+          value: JSON.stringify({
+            version: 1,
+            transitionId: stagedTransition?.id,
+            action: 'clear_orders',
+            completedAt: Date.now(),
+          }),
+          updatedAt: Date.now(),
+        };
+      }
+
+      return undefined;
+    });
+
+    renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(dbService.clear).not.toHaveBeenCalledWith('orders');
+      expect(mockState.portfolio).toEqual(nextPortfolio);
+      expect(localStorage.getItem(LOCAL_PERSISTENCE_TRANSITION_STORAGE_KEY)).toBeNull();
+    });
+  });
+
   it('ignores deprecated localStorage order and transaction arrays during hydration', async () => {
     const oldTransactions = [
       {
@@ -180,6 +304,43 @@ describe('useAppInitialization resilience', () => {
     expect(mockState.orders).toEqual([]);
     expect(localStorage.getItem('zerohue_transactions')).toBe(JSON.stringify(oldTransactions));
     expect(localStorage.getItem('zerohue_orders')).toBe(JSON.stringify(oldOrders));
+  });
+
+  it('blocks hydration when the local portfolio snapshot is older than the latest committed simulator version', async () => {
+    localStorage.setItem(
+      'zerohue_portfolio',
+      JSON.stringify({
+        version: 1,
+        commitVersion: 1,
+        portfolio: mockState.portfolio,
+      })
+    );
+    vi.mocked(dbService.get).mockResolvedValue({
+      key: LOCAL_PORTFOLIO_COMMIT_META_KEY,
+      value: JSON.stringify({
+        version: 1,
+        latestCommitVersion: 2,
+        status: 'pending',
+        updatedAt: Date.now(),
+      }),
+      updatedAt: Date.now(),
+    });
+    vi.mocked(offlineExecutionModule.useOfflineOrderExecution).mockReturnValue({
+      isInitialReplaySettled: true,
+      initialReplayError: null,
+      retryInitialReplay: vi.fn(),
+      skipInitialReplay: vi.fn(),
+    });
+
+    const { result } = renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(result.current.initializationStage).toBe('hydration_error');
+      expect(result.current.hydrationError).toMatchObject({
+        code: 'portfolio_snapshot_stale',
+      });
+      expect(result.current.hydrationError?.message).toContain('local portfolio snapshot is older');
+    });
   });
 
   it('still hydrates orders and transactions when market-history pruning fails', async () => {
@@ -410,11 +571,35 @@ describe('useAppInitialization resilience', () => {
       });
     });
 
-    expect(JSON.parse(localStorage.getItem('zerohue_portfolio') || 'null')).toEqual(
-      mockState.portfolio
+    const persistedPortfolioPayload = JSON.parse(
+      localStorage.getItem('zerohue_portfolio') || 'null'
     );
+    expect(persistedPortfolioPayload).toMatchObject({
+      version: 1,
+      commitVersion: 1,
+      portfolio: mockState.portfolio,
+    });
+    expect(dbService.put).toHaveBeenLastCalledWith('app_meta', {
+      key: LOCAL_PORTFOLIO_COMMIT_META_KEY,
+      value: expect.stringContaining('"status":"committed"'),
+      updatedAt: expect.any(Number),
+    });
 
     consoleSpy.mockRestore();
+  });
+
+  it('blocks hydration when a repaired portfolio snapshot cannot be re-persisted with commit metadata', async () => {
+    localStorage.setItem('zerohue_portfolio', '{bad-json');
+    vi.mocked(dbService.put).mockRejectedValueOnce(new Error('meta write failed'));
+
+    const { result } = renderHook(() => useAppInitialization());
+
+    await waitFor(() => {
+      expect(result.current.hydrationError).toMatchObject({
+        code: 'portfolio_unavailable',
+      });
+      expect(result.current.isHydrated).toBe(false);
+    });
   });
 
   it('cancels open orders when portfolio hydration falls back to defaults after unreadable storage', async () => {
@@ -683,7 +868,13 @@ describe('useAppInitialization resilience', () => {
       expect(mockState.portfolio.holdings).toEqual([]);
     });
 
-    expect(localStorage.getItem('zerohue_portfolio')).toContain('"holdings":[]');
+    expect(JSON.parse(localStorage.getItem('zerohue_portfolio') || 'null')).toMatchObject({
+      version: 1,
+      commitVersion: 1,
+      portfolio: {
+        holdings: [],
+      },
+    });
   });
 
   it('does not rebuild holdings from transaction history when portfolio storage is empty', async () => {

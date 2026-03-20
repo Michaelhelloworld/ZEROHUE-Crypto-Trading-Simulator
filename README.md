@@ -26,10 +26,15 @@ readable on GitHub, but it is **not** an open-source project.
 - Order support: market, limit, take-profit, and stop-loss
 - Execution semantics: deterministic trigger-price settlement for limit / TP / SL
 - Holdings model: FIFO lots internally, aggregated positions in the portfolio UI
-- Persistence: `portfolio` in localStorage, orders / transactions / market history in IndexedDB
+- Persistence: commit-aware `portfolio` snapshot plus cross-tab epoch markers in localStorage,
+  with `orders` / `transactions` / `market_history` / commit metadata in IndexedDB
+- Cross-tab safety: destructive local recovery bumps a persistence epoch; stale tabs become
+  read-only and must reload before they can write again
 - Startup flow: hydration and offline replay must settle before the live engine becomes ready
 - Startup guardrails: failed `orders` / `transactions` hydration blocks terminal startup and surfaces
   recovery actions instead of entering a split local state
+- Live execution guard: cached prices and backfilled history can update charts immediately, but the
+  matching engine only treats a source as executable after the first live ticker arrives
 
 ## Stack
 
@@ -113,6 +118,8 @@ npm run test:e2e:ui
 
 - If persisted `orders` or `transactions` cannot be restored safely, ZEROHUE blocks terminal startup
   instead of continuing with incomplete local state.
+- If a stale tab tries to keep running after another tab rebuilds local persistence, the terminal
+  blocks with `Tab Reload Required` until the user reloads.
 - The startup recovery screen keeps `Retry Hydration` and `Reload App`, and can also surface
   browser-only repair actions depending on the failure source.
 - `Clear Orders Cache And Rebuild Cash Snapshot` removes persisted orders and rebuilds a clean
@@ -120,6 +127,11 @@ npm run test:e2e:ui
 - `Clear Transaction History And Reset Performance Snapshot` removes persisted trade history and
   resets realized performance metrics while preserving current orders and holdings.
 - `Factory Reset Local Simulator State` rebuilds the entire local simulator snapshot on the device.
+- Recovery writes are staged through a local transition journal and committed id so interrupted
+  browser-only resets can resume safely on next startup instead of replaying destructive work twice.
+- If ZEROHUE repairs a malformed portfolio snapshot during hydration but cannot re-persist the
+  repaired commit-aware snapshot, startup is blocked with `portfolio_unavailable` rather than
+  restoring state that would become stale on refresh.
 
 ## Windows note
 
@@ -137,6 +149,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 - `src/hooks/useAppInitialization.ts`: hydration, replay gating, and startup-stage orchestration
 - `src/components/layout/TerminalShell.tsx`: terminal startup gating and recovery UI
 - `src/utils/appPersistence.ts`: persisted-state normalization, reconciliation, and hydration rules
+- `src/utils/localSimulatorState.ts`: commit-aware local portfolio persistence and recovery journals
+- `src/utils/persistenceEpoch.ts`: cross-tab invalidation and write-ownership helpers
 - `src/workers/marketEngine.worker.ts`: matching engine and trigger execution
 - `src/hooks/useOfflineOrderExecution.tsx`: offline replay reconciliation
 

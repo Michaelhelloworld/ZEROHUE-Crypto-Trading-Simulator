@@ -1,27 +1,23 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, it, expect, vi, beforeEach, Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import toast from 'react-hot-toast';
 import { usePortfolioManager } from '../usePortfolioManager';
 import { Coin, Order } from '../../types';
 import { generateUUID } from '../../utils/uuid';
 import * as useStoreModule from '../../store/useStore';
-import { dbService } from '../../services/db';
 import * as localSimulatorStateModule from '../../utils/localSimulatorState';
 
 vi.mock('react-hot-toast', () => ({
   default: { success: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock('../../services/db', () => ({
-  dbService: {
-    clearSimulatorState: vi.fn(),
-  },
-}));
-
 vi.mock('../../utils/localSimulatorState', () => ({
-  clearLocalSimulatorStorage: vi.fn(() => true),
-  writeLocalPortfolioStorage: vi.fn(() => true),
+  stageLocalPersistenceTransition: vi.fn(() => true),
+  executeLocalPersistenceTransition: vi.fn(async (transition) => {
+    localStorage.setItem('zerohue_portfolio', JSON.stringify(transition.nextPortfolio));
+    return true;
+  }),
 }));
 
 const createCoin = (overrides: Partial<Coin> = {}): Coin => ({
@@ -52,9 +48,9 @@ describe('usePortfolioManager', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    (dbService.clearSimulatorState as Mock).mockResolvedValue(undefined);
-    vi.mocked(localSimulatorStateModule.clearLocalSimulatorStorage).mockReturnValue(true);
-    vi.mocked(localSimulatorStateModule.writeLocalPortfolioStorage).mockReturnValue(true);
+    localStorage.clear();
+    vi.mocked(localSimulatorStateModule.stageLocalPersistenceTransition).mockReturnValue(true);
+    vi.mocked(localSimulatorStateModule.executeLocalPersistenceTransition).mockResolvedValue(true);
 
     mockState = {
       coins: [
@@ -186,23 +182,29 @@ describe('usePortfolioManager', () => {
       expect(mockState.setTransactions).toHaveBeenCalledWith([]);
       expect(mockState.setOrders).toHaveBeenCalledWith([]);
       expect(toast.success).toHaveBeenCalledWith('Account reset with $100,000 balance');
-      expect(localSimulatorStateModule.clearLocalSimulatorStorage).toHaveBeenCalledTimes(1);
-      expect(localSimulatorStateModule.writeLocalPortfolioStorage).toHaveBeenCalledWith({
-        balance: 100000,
-        initialBalance: 100000,
-        holdings: [],
-        peakBalance: 100000,
-        historicalMDD: 0,
-        grossProfit: 0,
-        grossLoss: 0,
-        validTradesCount: 0,
+      expect(localSimulatorStateModule.stageLocalPersistenceTransition).toHaveBeenCalledWith({
+        version: 1,
+        action: 'account_reset',
+        nextPortfolio: {
+          balance: 100000,
+          initialBalance: 100000,
+          holdings: [],
+          peakBalance: 100000,
+          historicalMDD: 0,
+          grossProfit: 0,
+          grossLoss: 0,
+          validTradesCount: 0,
+        },
       });
+      expect(localSimulatorStateModule.executeLocalPersistenceTransition).toHaveBeenCalledTimes(1);
     });
 
     it('should keep the current in-memory state when persistent reset fails', async () => {
       const { result } = renderManager();
       mockState.isResetModalOpen = true;
-      (dbService.clearSimulatorState as Mock).mockRejectedValueOnce(new Error('clear failed'));
+      vi.mocked(localSimulatorStateModule.executeLocalPersistenceTransition).mockResolvedValueOnce(
+        false
+      );
 
       await act(async () => {
         await result.current.handleConfirmReset(100000);
@@ -217,10 +219,12 @@ describe('usePortfolioManager', () => {
       );
     });
 
-    it('should keep the current in-memory state when local simulator persistence cannot be rewritten', async () => {
+    it('should keep the current in-memory state when local simulator persistence cannot be staged', async () => {
       const { result } = renderManager();
       mockState.isResetModalOpen = true;
-      vi.mocked(localSimulatorStateModule.writeLocalPortfolioStorage).mockReturnValueOnce(false);
+      vi.mocked(localSimulatorStateModule.stageLocalPersistenceTransition).mockReturnValueOnce(
+        false
+      );
 
       await act(async () => {
         await result.current.handleConfirmReset(100000);
@@ -233,6 +237,7 @@ describe('usePortfolioManager', () => {
       expect(toast.error).toHaveBeenCalledWith(
         'Account reset failed because device storage could not be cleared.'
       );
+      expect(localSimulatorStateModule.executeLocalPersistenceTransition).not.toHaveBeenCalled();
     });
   });
 

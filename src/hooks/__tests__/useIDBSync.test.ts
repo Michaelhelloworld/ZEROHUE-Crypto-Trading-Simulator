@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import { useIDBSync } from '../useIDBSync';
 import { dbService, ZEROHUESchema } from '../../services/db';
+import { LOCAL_PERSISTENCE_EPOCH_KEY } from '../../constants/storage';
+import { usePersistenceEpochStore } from '../../store/usePersistenceEpochStore';
 import { usePersistenceSyncStore } from '../../store/usePersistenceSyncStore';
 import { Order } from '../../types'; // Transaction intentionally omitted (unused)
 
@@ -17,6 +19,8 @@ describe('useIDBSync', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    localStorage.clear();
+    usePersistenceEpochStore.getState().reset();
     usePersistenceSyncStore.getState().resetIssues();
   });
 
@@ -287,5 +291,41 @@ describe('useIDBSync', () => {
     });
 
     expect(dbService.bulkPut).toHaveBeenCalledTimes(5);
+  });
+
+  it('blocks IndexedDB writes after another tab advances the persistence epoch', async () => {
+    localStorage.setItem(LOCAL_PERSISTENCE_EPOCH_KEY, '1');
+    usePersistenceEpochStore.getState().initializeTabEpoch(1);
+
+    const newData: Order[] = [
+      {
+        id: 'epoch-blocked-order',
+        type: 'BUY',
+        coinId: 'btc',
+        coinSymbol: 'BTC',
+        amount: 1,
+        limitPrice: 50000,
+        total: 50000,
+        status: 'OPEN',
+        timestamp: Date.now(),
+      },
+    ];
+
+    const { rerender } = renderHook(({ data }) => useIDBSync('orders', data, true), {
+      initialProps: { data: [] as Order[] },
+    });
+
+    localStorage.setItem(LOCAL_PERSISTENCE_EPOCH_KEY, '2');
+    rerender({ data: newData });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    expect(dbService.bulkPut).not.toHaveBeenCalled();
+    expect(usePersistenceSyncStore.getState().issues.orders).toMatchObject({
+      status: 'degraded',
+      message: expect.stringContaining('Reload this tab before continuing'),
+    });
   });
 });

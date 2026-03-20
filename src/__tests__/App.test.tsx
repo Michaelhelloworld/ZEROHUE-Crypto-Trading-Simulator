@@ -117,6 +117,9 @@ describe('App routing', () => {
   it('does not block FAQ routes with the disclaimer modal', async () => {
     window.history.pushState({}, '', '/faq');
     render(<App />);
+    await act(async () => {
+      await vi.dynamicImportSettled();
+    });
 
     expect(await screen.findByText('FAQ View')).toBeInTheDocument();
     expect(screen.queryByText('Disclaimer Modal')).not.toBeInTheDocument();

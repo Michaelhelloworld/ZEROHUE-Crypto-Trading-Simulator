@@ -10,7 +10,9 @@ import { clearBinanceRegionCache, getBinanceConfig } from '../utils/binanceConfi
 import { fetchWithRetry } from '../utils/fetchWithRetry';
 import { mapWithConcurrency } from '../utils/mapWithConcurrency';
 import { dbService } from '../services/db';
+import { useMarketExecutionStore } from '../store/useMarketExecutionStore';
 import { useStore } from '../store/useStore';
+import { isCurrentTabPersistenceWritable } from '../utils/persistenceEpoch';
 import { safeStorage } from '../utils/safeStorage';
 import {
   applyQueuedUpdatesToCoins,
@@ -28,6 +30,7 @@ interface PendingMarketUpdate {
   symbol: string;
   data: { price: number; change?: number };
   receivedAt: number;
+  source: MarketSource;
 }
 
 export const useMarketData = () => {
@@ -36,6 +39,8 @@ export const useMarketData = () => {
   const setBinanceStatus = useStore((state) => state.setBinanceStatus);
   const setCoinbaseStatus = useStore((state) => state.setCoinbaseStatus);
   const setRegion = useStore((state) => state.setRegion);
+  const setSourceExecutable = useMarketExecutionStore((state) => state.setSourceExecutable);
+  const resetExecutableSources = useMarketExecutionStore((state) => state.resetExecutableSources);
 
   // Use a ref for pending updates to batch them with RequestAnimationFrame
   const pendingUpdates = useRef<PendingMarketUpdate[]>([]);
@@ -55,64 +60,139 @@ export const useMarketData = () => {
   const lastBinanceMessageTime = useRef<number>(Date.now());
   const lastCoinbaseMessageTime = useRef<number>(Date.now());
   const pruneCounter = useRef<number>(0);
+  const lastBinanceEventTimeRef = useRef(new Map<string, number>());
+  const lastCoinbaseEventRef = useRef(
+    new Map<string, { sequence: number | null; eventTime: number | null }>()
+  );
 
-  const flushUpdates = useCallback(() => {
-    rafId.current = null;
-    if (pendingUpdates.current.length === 0) return;
+  const persistHistorySnapshot = useCallback(
+    (coinsSnapshot: Coin[], now: number, force = false) => {
+      if (!force && now - lastSaveTimeRef.current <= 10000) {
+        return;
+      }
 
-    const queuedUpdates = pendingUpdates.current.splice(0, pendingUpdates.current.length);
-
-    const now = Date.now();
-    let nextCoins: Coin[] = useStore.getState().coins;
-    let nextHistoryBucketStarts = new Map(historyBucketStartRef.current);
-
-    // Apply queued market ticks in-order so intra-frame price touches still reach the engine.
-    for (const queuedUpdate of queuedUpdates) {
-      const appliedUpdates = applyQueuedUpdatesToCoins(
-        nextCoins,
-        new Map([[queuedUpdate.symbol, queuedUpdate.data]]),
-        latestLiveUpdatesRef.current,
-        queuedUpdate.receivedAt,
-        nextHistoryBucketStarts
-      );
-
-      nextHistoryBucketStarts = appliedUpdates.historyBucketStarts;
-      nextCoins = appliedUpdates.coins;
-      setCoins(nextCoins);
-    }
-
-    historyBucketStartRef.current = nextHistoryBucketStarts;
-
-    // Async background save to IndexedDB - throttled to every 10 seconds
-    if (now - lastSaveTimeRef.current > 10000) {
       lastSaveTimeRef.current = now;
-
-      // Use the freshly calculated nextCoins to avoid Store state lag
-      const historyToSave = buildHistorySavePayload(nextCoins, now);
+      const historyToSave = buildHistorySavePayload(coinsSnapshot, now);
 
       dbService
         .bulkPut('market_history', historyToSave)
         .catch((e) => console.error('Failed to save history', e));
 
-      // Continuous Pruning: Run every ~1 hour (360 cycles of 10s)
       pruneCounter.current++;
       if (pruneCounter.current >= 360) {
         pruneCounter.current = 0;
         dbService.pruneHistory(7).catch(() => {});
       }
+    },
+    []
+  );
+
+  const cancelScheduledFlush = useCallback(() => {
+    if (rafId.current !== null) {
+      cancelAnimationFrame(rafId.current);
+      rafId.current = null;
     }
-  }, [setCoins]);
+  }, []);
+
+  const persistLastOnlineAt = useCallback(
+    (source: MarketSource, timestamp = Date.now(), force = false) => {
+      if (typeof window === 'undefined') return;
+      if (!isCurrentTabPersistenceWritable()) return;
+
+      try {
+        const sourceKey =
+          source === 'BINANCE' ? LAST_ONLINE_AT_BINANCE_KEY : LAST_ONLINE_AT_COINBASE_KEY;
+        const latestSourceTimestamp = Math.max(lastOnlineAtSaveRef.current[source], timestamp);
+        const latestGlobalTimestamp = Math.max(lastOnlineAtSaveRef.current.global, timestamp);
+
+        if (
+          latestSourceTimestamp > lastOnlineAtSaveRef.current[source] &&
+          (force || timestamp - lastOnlineAtSaveRef.current[source] >= 15000)
+        ) {
+          lastOnlineAtSaveRef.current[source] = latestSourceTimestamp;
+          safeStorage.setItem(sourceKey, String(latestSourceTimestamp));
+        }
+
+        if (
+          latestGlobalTimestamp > lastOnlineAtSaveRef.current.global &&
+          (force || timestamp - lastOnlineAtSaveRef.current.global >= 15000)
+        ) {
+          lastOnlineAtSaveRef.current.global = latestGlobalTimestamp;
+          safeStorage.setItem(LAST_ONLINE_AT_KEY, String(latestGlobalTimestamp));
+        }
+      } catch {
+        // Ignore storage failures; replay will fall back to order/holding timestamps.
+      }
+    },
+    []
+  );
+
+  const flushUpdates = useCallback(
+    (forcePersist = false) => {
+      if (pendingUpdates.current.length === 0) return;
+
+      const queuedUpdates = pendingUpdates.current.splice(0, pendingUpdates.current.length);
+      const latestSourceWatermarks: Record<MarketSource, number> = {
+        BINANCE: 0,
+        COINBASE: 0,
+      };
+
+      const now = Date.now();
+      let nextCoins: Coin[] = useStore.getState().coins;
+      let nextHistoryBucketStarts = new Map(historyBucketStartRef.current);
+
+      // Apply queued market ticks in-order so intra-frame price touches still reach the engine.
+      for (const queuedUpdate of queuedUpdates) {
+        latestSourceWatermarks[queuedUpdate.source] = Math.max(
+          latestSourceWatermarks[queuedUpdate.source],
+          queuedUpdate.receivedAt
+        );
+        const appliedUpdates = applyQueuedUpdatesToCoins(
+          nextCoins,
+          new Map([[queuedUpdate.symbol, queuedUpdate.data]]),
+          latestLiveUpdatesRef.current,
+          queuedUpdate.receivedAt,
+          nextHistoryBucketStarts
+        );
+
+        nextHistoryBucketStarts = appliedUpdates.historyBucketStarts;
+        nextCoins = appliedUpdates.coins;
+        setCoins(nextCoins);
+      }
+
+      historyBucketStartRef.current = nextHistoryBucketStarts;
+
+      (Object.entries(latestSourceWatermarks) as Array<[MarketSource, number]>).forEach(
+        ([source, watermark]) => {
+          if (watermark > 0) {
+            persistLastOnlineAt(source, watermark, forcePersist);
+          }
+        }
+      );
+
+      persistHistorySnapshot(nextCoins, now, forcePersist);
+    },
+    [persistHistorySnapshot, persistLastOnlineAt, setCoins]
+  );
 
   const queueUpdate = useCallback(
-    (symbol: string, data: { price: number; change?: number }, receivedAt = Date.now()) => {
+    (
+      symbol: string,
+      data: { price: number; change?: number },
+      receivedAt = Date.now(),
+      source: MarketSource
+    ) => {
       latestLiveUpdatesRef.current.set(symbol, {
         price: data.price,
         change: data.change,
         receivedAt,
       });
-      pendingUpdates.current.push({ symbol, data, receivedAt });
+      pendingUpdates.current.push({ symbol, data, receivedAt, source });
       if (rafId.current === null) {
-        rafId.current = requestAnimationFrame(flushUpdates);
+        rafId.current = requestAnimationFrame(() => {
+          rafId.current = null;
+          flushUpdates();
+        });
       }
     },
     [flushUpdates]
@@ -123,7 +203,8 @@ export const useMarketData = () => {
       coin: Coin,
       history: number[],
       requestStartedAt: number,
-      historyTimestamp = requestStartedAt
+      historyTimestamp = requestStartedAt,
+      options?: { preserveCurrentPrice?: boolean }
     ) => {
       const mergeResult = mergeMarketHistorySnapshot({
         coin,
@@ -144,31 +225,83 @@ export const useMarketData = () => {
         historyBucketStartRef.current.set(coin.symbol, mergeResult.bucketStart);
       }
 
+      if (options?.preserveCurrentPrice && Number.isFinite(coin.price) && coin.price > 0) {
+        const openPrice = mergeResult.coin.history[0] ?? coin.price;
+        return {
+          ...mergeResult.coin,
+          price: coin.price,
+          change24h:
+            openPrice === 0
+              ? mergeResult.coin.change24h
+              : ((coin.price - openPrice) / openPrice) * 100,
+        };
+      }
+
       return mergeResult.coin;
     },
     []
   );
 
-  const persistLastOnlineAt = useCallback((source: MarketSource, timestamp = Date.now()) => {
-    if (typeof window === 'undefined') return;
-
-    try {
-      const sourceKey =
-        source === 'BINANCE' ? LAST_ONLINE_AT_BINANCE_KEY : LAST_ONLINE_AT_COINBASE_KEY;
-
-      if (timestamp - lastOnlineAtSaveRef.current[source] >= 15000) {
-        lastOnlineAtSaveRef.current[source] = timestamp;
-        safeStorage.setItem(sourceKey, String(timestamp));
-      }
-
-      if (timestamp - lastOnlineAtSaveRef.current.global >= 15000) {
-        lastOnlineAtSaveRef.current.global = timestamp;
-        safeStorage.setItem(LAST_ONLINE_AT_KEY, String(timestamp));
-      }
-    } catch {
-      // Ignore storage failures; replay will fall back to order/holding timestamps.
+  const shouldAcceptBinanceEvent = useCallback((symbol: string, eventTime: number | null) => {
+    if (!eventTime || !Number.isFinite(eventTime) || eventTime <= 0) {
+      return true;
     }
+
+    const previousEventTime = lastBinanceEventTimeRef.current.get(symbol);
+    if (previousEventTime !== undefined && eventTime <= previousEventTime) {
+      return false;
+    }
+
+    lastBinanceEventTimeRef.current.set(symbol, eventTime);
+    return true;
   }, []);
+
+  const shouldAcceptCoinbaseEvent = useCallback(
+    (symbol: string, sequence: number | null, eventTime: number | null) => {
+      const previousEvent = lastCoinbaseEventRef.current.get(symbol);
+
+      if (sequence && Number.isFinite(sequence) && sequence > 0) {
+        if (previousEvent?.sequence !== null && previousEvent?.sequence !== undefined) {
+          if (sequence <= previousEvent.sequence) {
+            return false;
+          }
+        }
+
+        lastCoinbaseEventRef.current.set(symbol, {
+          sequence,
+          eventTime:
+            eventTime && Number.isFinite(eventTime) && eventTime > 0
+              ? eventTime
+              : (previousEvent?.eventTime ?? null),
+        });
+        return true;
+      }
+
+      if (eventTime && Number.isFinite(eventTime) && eventTime > 0) {
+        if (previousEvent?.eventTime !== null && previousEvent?.eventTime !== undefined) {
+          if (eventTime <= previousEvent.eventTime) {
+            return false;
+          }
+        }
+
+        lastCoinbaseEventRef.current.set(symbol, {
+          sequence: previousEvent?.sequence ?? null,
+          eventTime,
+        });
+      }
+
+      return true;
+    },
+    []
+  );
+
+  useEffect(() => {
+    resetExecutableSources();
+
+    return () => {
+      resetExecutableSources();
+    };
+  }, [resetExecutableSources]);
 
   useEffect(() => {
     const currentBucketStart = getHistoryBucketStart(Date.now());
@@ -220,6 +353,7 @@ export const useMarketData = () => {
 
     const scheduleBinanceReconnect = () => {
       if (!isMounted) return;
+      setSourceExecutable('BINANCE', false);
       setBinanceStatus('disconnected');
       const baseDelay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
       const jitter = Math.random() * 1000;
@@ -237,7 +371,10 @@ export const useMarketData = () => {
       }, delay);
     };
 
-    const fetchBinanceHistory = async () => {
+    const fetchBinanceHistory = async (options?: {
+      advanceReplayWatermark?: boolean;
+      preserveCurrentPrice?: boolean;
+    }) => {
       const requestStartedAt = Date.now();
       try {
         const config = await getBinanceConfig();
@@ -269,16 +406,30 @@ export const useMarketData = () => {
           }
         );
 
+        const didReceiveHistory = results.some((result) => result && result.history.length > 0);
+
         setCoins((prevCoins) =>
           prevCoins.map((coin) => {
             if (coin.source === 'COINBASE') return coin;
             const match = results.find((r) => r?.symbol === coin.symbol);
             if (match && match.history.length > 0) {
-              return mergeHistoricalSnapshot(coin, match.history, requestStartedAt);
+              return mergeHistoricalSnapshot(
+                coin,
+                match.history,
+                requestStartedAt,
+                requestStartedAt,
+                {
+                  preserveCurrentPrice: options?.preserveCurrentPrice,
+                }
+              );
             }
             return coin;
           })
         );
+
+        if (options?.advanceReplayWatermark && didReceiveHistory) {
+          persistLastOnlineAt('BINANCE', requestStartedAt, true);
+        }
       } catch (err) {
         console.error('Error in Binance init', err);
       }
@@ -301,12 +452,15 @@ export const useMarketData = () => {
         ws.onopen = () => {
           const shouldRefreshHistory = hasConnectedOnce;
           hasConnectedOnce = true;
+          setSourceExecutable('BINANCE', false);
           setBinanceStatus('connected');
           reconnectAttempts = 0;
           lastBinanceMessageTime.current = Date.now();
-          persistLastOnlineAt('BINANCE', lastBinanceMessageTime.current);
           if (shouldRefreshHistory) {
-            void fetchBinanceHistory();
+            void fetchBinanceHistory({
+              advanceReplayWatermark: true,
+              preserveCurrentPrice: true,
+            });
           }
         };
 
@@ -318,12 +472,21 @@ export const useMarketData = () => {
               const symbol = data.s.replace('USDT', '');
               const price = parseFloat(data.c);
               if (!Number.isFinite(price)) return;
+              const eventTime = Number(data.E);
+              if (
+                !shouldAcceptBinanceEvent(
+                  symbol,
+                  Number.isFinite(eventTime) && eventTime > 0 ? eventTime : null
+                )
+              ) {
+                return;
+              }
               const parsedChange = parseFloat(data.P);
               const change = Number.isFinite(parsedChange) ? parsedChange : undefined;
 
               const receivedAt = Date.now();
               lastBinanceMessageTime.current = receivedAt; // Heartbeat update
-              persistLastOnlineAt('BINANCE', receivedAt);
+              setSourceExecutable('BINANCE', true);
 
               queueUpdate(
                 symbol,
@@ -331,7 +494,8 @@ export const useMarketData = () => {
                   price,
                   change,
                 },
-                receivedAt
+                receivedAt,
+                'BINANCE'
               );
             }
           } catch (err) {
@@ -339,14 +503,19 @@ export const useMarketData = () => {
           }
         };
 
-        ws.onerror = () => setBinanceStatus('disconnected');
+        ws.onerror = () => {
+          setSourceExecutable('BINANCE', false);
+          setBinanceStatus('disconnected');
+        };
 
         ws.onclose = () => {
           if (!isMounted) return;
+          setSourceExecutable('BINANCE', false);
           scheduleBinanceReconnect();
         };
       } catch (error) {
         console.error('Failed to connect Binance websocket', error);
+        setSourceExecutable('BINANCE', false);
         scheduleBinanceReconnect();
       }
     };
@@ -356,6 +525,7 @@ export const useMarketData = () => {
 
     return () => {
       isMounted = false;
+      setSourceExecutable('BINANCE', false);
       if (ws) ws.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
@@ -366,6 +536,8 @@ export const useMarketData = () => {
     setBinanceStatus,
     setCoins,
     setRegion,
+    setSourceExecutable,
+    shouldAcceptBinanceEvent,
   ]);
 
   // --- Coinbase Flow ---
@@ -376,7 +548,10 @@ export const useMarketData = () => {
     let isMounted = true;
     let hasConnectedOnce = false;
 
-    const fetchCoinbaseHistory = async () => {
+    const fetchCoinbaseHistory = async (options?: {
+      advanceReplayWatermark?: boolean;
+      preserveCurrentPrice?: boolean;
+    }) => {
       const requestStartedAt = Date.now();
       if (COINBASE_COINS.length === 0) return;
 
@@ -407,16 +582,30 @@ export const useMarketData = () => {
         }
       );
 
+      const didReceiveHistory = results.some((result) => result && result.history.length > 0);
+
       setCoins((prevCoins) =>
         prevCoins.map((coin) => {
           if (coin.source !== 'COINBASE') return coin;
           const match = results.find((r) => r?.symbol === coin.symbol);
           if (match && match.history.length > 0) {
-            return mergeHistoricalSnapshot(coin, match.history, requestStartedAt);
+            return mergeHistoricalSnapshot(
+              coin,
+              match.history,
+              requestStartedAt,
+              requestStartedAt,
+              {
+                preserveCurrentPrice: options?.preserveCurrentPrice,
+              }
+            );
           }
           return coin;
         })
       );
+
+      if (options?.advanceReplayWatermark && didReceiveHistory) {
+        persistLastOnlineAt('COINBASE', requestStartedAt, true);
+      }
     };
 
     const connectCoinbase = () => {
@@ -427,10 +616,10 @@ export const useMarketData = () => {
       ws.onopen = () => {
         const shouldRefreshHistory = hasConnectedOnce;
         hasConnectedOnce = true;
+        setSourceExecutable('COINBASE', false);
         setCoinbaseStatus('connected');
         reconnectAttempts = 0;
         lastCoinbaseMessageTime.current = Date.now();
-        persistLastOnlineAt('COINBASE', lastCoinbaseMessageTime.current);
 
         const productIds = COINBASE_COINS.map((c) => `${c.symbol}-USD`);
 
@@ -443,7 +632,10 @@ export const useMarketData = () => {
         );
 
         if (shouldRefreshHistory) {
-          void fetchCoinbaseHistory();
+          void fetchCoinbaseHistory({
+            advanceReplayWatermark: true,
+            preserveCurrentPrice: true,
+          });
         }
       };
 
@@ -454,10 +646,21 @@ export const useMarketData = () => {
             const symbol = data.product_id.split('-')[0];
             const price = parseFloat(data.price);
             if (!Number.isFinite(price)) return;
+            const sequence = Number(data.sequence);
+            const eventTime = Date.parse(String(data.time ?? ''));
+            if (
+              !shouldAcceptCoinbaseEvent(
+                symbol,
+                Number.isFinite(sequence) && sequence > 0 ? sequence : null,
+                Number.isFinite(eventTime) && eventTime > 0 ? eventTime : null
+              )
+            ) {
+              return;
+            }
 
             const receivedAt = Date.now();
             lastCoinbaseMessageTime.current = receivedAt; // Heartbeat update
-            persistLastOnlineAt('COINBASE', receivedAt);
+            setSourceExecutable('COINBASE', true);
 
             const open24h = parseFloat(data.open_24h);
             const change =
@@ -465,17 +668,21 @@ export const useMarketData = () => {
                 ? ((price - open24h) / open24h) * 100
                 : undefined;
 
-            queueUpdate(symbol, { price, change }, receivedAt);
+            queueUpdate(symbol, { price, change }, receivedAt, 'COINBASE');
           }
         } catch (e) {
           console.error('Coinbase WS parse error', e);
         }
       };
 
-      ws.onerror = () => setCoinbaseStatus('disconnected');
+      ws.onerror = () => {
+        setSourceExecutable('COINBASE', false);
+        setCoinbaseStatus('disconnected');
+      };
 
       ws.onclose = () => {
         if (!isMounted) return;
+        setSourceExecutable('COINBASE', false);
         setCoinbaseStatus('disconnected');
         const baseDelay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
         const jitter = Math.random() * 1000;
@@ -490,10 +697,19 @@ export const useMarketData = () => {
 
     return () => {
       isMounted = false;
+      setSourceExecutable('COINBASE', false);
       if (ws) ws.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, [mergeHistoricalSnapshot, persistLastOnlineAt, queueUpdate, setCoinbaseStatus, setCoins]);
+  }, [
+    mergeHistoricalSnapshot,
+    persistLastOnlineAt,
+    queueUpdate,
+    setCoinbaseStatus,
+    setCoins,
+    setSourceExecutable,
+    shouldAcceptCoinbaseEvent,
+  ]);
 
   // --- Connection Watchdog (Heartbeat) ---
   useEffect(() => {
@@ -524,28 +740,8 @@ export const useMarketData = () => {
   // --- Final Flush on Hide/Close (best-effort only) ---
   useEffect(() => {
     const flushPendingHistory = () => {
-      if (pendingUpdates.current.length === 0) return;
-
-      let coinsSnapshot = useStore.getState().coins;
-      let nextHistoryBucketStarts = new Map(historyBucketStartRef.current);
-      const queuedUpdates = pendingUpdates.current.splice(0, pendingUpdates.current.length);
-      const timestamp = Date.now();
-      for (const queuedUpdate of queuedUpdates) {
-        const appliedUpdates = applyQueuedUpdatesToCoins(
-          coinsSnapshot,
-          new Map([[queuedUpdate.symbol, queuedUpdate.data]]),
-          latestLiveUpdatesRef.current,
-          queuedUpdate.receivedAt,
-          nextHistoryBucketStarts
-        );
-        nextHistoryBucketStarts = appliedUpdates.historyBucketStarts;
-        coinsSnapshot = appliedUpdates.coins;
-      }
-
-      historyBucketStartRef.current = nextHistoryBucketStarts;
-      const historyToSave = buildHistorySavePayload(coinsSnapshot, timestamp);
-
-      dbService.bulkPut('market_history', historyToSave).catch(() => {});
+      cancelScheduledFlush();
+      flushUpdates(true);
     };
 
     const handleVisibilityChange = () => {
@@ -562,11 +758,9 @@ export const useMarketData = () => {
       window.removeEventListener('pagehide', flushPendingHistory);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       flushPendingHistory();
-      if (rafId.current !== null) {
-        cancelAnimationFrame(rafId.current);
-      }
+      cancelScheduledFlush();
     };
-  }, []);
+  }, [cancelScheduledFlush, flushUpdates]);
 
   return {};
 };

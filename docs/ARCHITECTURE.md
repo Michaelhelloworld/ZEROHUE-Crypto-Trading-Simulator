@@ -60,7 +60,10 @@ Public content prerendering is intentionally split from the client route graph: 
 - `src/hooks/usePortfolioManager.ts`: top-line valuation, scoring, and portfolio helpers
 - `src/hooks/useAppInitialization.ts`: hydration, replay gating, and startup stage transitions
 - `src/hooks/useIDBSync.ts`: incremental IndexedDB persistence
+- `src/hooks/usePersistenceEpochGuard.ts`: cross-tab persistence invalidation listener
 - `src/utils/appInitializationState.ts`: startup state machine (`hydrating`, `hydration_error`, `replay_pending`, `replay_error`, `ready`)
+- `src/utils/persistenceEpoch.ts`: per-tab write ownership and cross-tab epoch helpers
+- `src/store/useMarketExecutionStore.ts`: source-level executable price gating
 
 Holdings are modeled as FIFO lots. The portfolio UI aggregates them for readability, but execution, PnL attribution, and scoring remain lot-based.
 
@@ -77,20 +80,24 @@ Worker isolation is used to keep the main thread responsive during frequent pric
 ### Startup hydration flow
 
 1. `useAppInitialization` restores `portfolio` from localStorage and `orders` / `transactions` from IndexedDB through `hydratePersistedAppState(...)`.
-2. Hydration normalizes malformed-but-parseable state before it enters the store and can rewrite sanitized state back to browser persistence.
-3. If the restored `portfolio` cannot be trusted as the source of truth, open orders are reconciled and can be cancelled to avoid cash / holdings mismatches.
-4. If `orders` or `transactions` are unavailable from IndexedDB, startup enters `hydration_error` and `TerminalShell` blocks simulator entry.
-5. The startup recovery UI keeps `Retry Hydration` and `Reload App`, and can surface targeted browser-only repair actions or a full local factory reset.
-6. Only after hydration succeeds does initial offline replay begin; the app does not enter the ready stage before both startup phases settle.
+2. Before normal hydration runs, any staged local recovery transition is resumed from its browser journal unless the same transition id was already committed, in which case the stale journal is just cleared.
+3. Hydration normalizes malformed-but-parseable state before it enters the store and rewrites repaired `portfolio` snapshots back through the commit-aware local persistence path instead of raw localStorage writes.
+4. If the restored `portfolio` cannot be trusted as the source of truth, open orders are reconciled and can be cancelled to avoid cash / holdings mismatches.
+5. If `orders` or `transactions` are unavailable from IndexedDB, startup enters `hydration_error` and `TerminalShell` blocks simulator entry.
+6. If hydration repairs a malformed `portfolio` but cannot persist the repaired commit-aware snapshot, startup fails with `portfolio_unavailable` rather than allowing a stale refresh path.
+7. Each tab establishes a persistence epoch on startup. If another tab advances the epoch during destructive recovery, the current tab becomes non-writable and `TerminalShell` blocks with `Tab Reload Required`.
+8. Only after hydration succeeds does initial offline replay begin; the app does not enter the ready stage before both startup phases settle, and stale tabs do not enable the live engine.
 
 ### Market data flow
 
 1. `useMarketData` hydrates cached `market_history` from IndexedDB.
 2. Initial Binance / Coinbase history requests use bounded concurrency and retry.
 3. WebSocket ticker updates are buffered and applied in animation-frame batches.
-4. `lastOnlineAt` timestamps are persisted per source to narrow offline replay windows.
-5. Market snapshots are sent to the worker through `useWorkerBridge`.
-6. Worker results return portfolio updates, transactions, and notifications, which are committed to the store.
+4. Per-source `lastOnlineAt` watermarks are advanced only after queued ticks are actually flushed into store state, so hard-kill windows cannot acknowledge ticks that never reached matching.
+5. Live Binance and Coinbase ticks are filtered by exchange event ordering (`E`, `sequence`, `time`) before they can move prices backward.
+6. Each source stays non-executable until the first live ticker arrives; cached history and reconnect backfills can refresh UI prices but do not drive matching while the source is still gated.
+7. Market snapshots are sent to the worker through `useWorkerBridge`.
+8. Worker results return portfolio updates, transactions, and notifications, which are committed to the store.
 
 ### Order flow
 
@@ -112,18 +119,23 @@ Worker isolation is used to keep the main thread responsive during frequent pric
 1. `useOfflineOrderExecution` runs after hydration and before the shell enters the ready stage.
 2. Replay candidates are grouped by symbol and source, then fetched in symbol-level batches.
 3. Replay uses 1m candles for recent windows and 1h candles for older windows.
-4. Filled replay results are applied with guarded transitions and the same FIFO semantics used online.
-5. If initial replay cannot complete after retries, the shell offers `Retry Sync` or `Continue Without Sync`.
+4. Fetched candles are structurally validated (`open/high/low/close` finite, positive, and internally consistent) before replay uses them.
+5. Replay fills harmless missing buckets with carry-forward synthetic candles, but rejects discontinuous gaps whose neighboring prices do not join cleanly.
+6. Filled replay results are applied with guarded transitions and the same FIFO semantics used online.
+7. If initial replay cannot complete after retries, the shell offers `Retry Sync` or `Continue Without Sync`.
 
 ## 6. Persistence, valuation, scoring, and public content
 
-- `portfolio` is stored in localStorage
+- `portfolio` is stored in localStorage as a commit-aware envelope, while its latest commit state is mirrored in IndexedDB `app_meta`
 - `orders`, `transactions`, and `market_history` are stored in IndexedDB
+- destructive browser-only recovery writes a transition journal to localStorage and a committed transition id to IndexedDB so interrupted resets can resume idempotently
+- local persistence ownership is guarded by a cross-tab epoch in localStorage; stale tabs are downgraded to read-only until reload
 - hydration normalizes malformed-but-parseable state before it enters the store
 - hydration can rewrite sanitized `portfolio`, `orders`, and `transactions` back to browser storage
 - fallback or untrusted `portfolio` recovery can trigger open-order reconciliation and cancellation
 - hydration does not recover deprecated order or transaction arrays from localStorage
 - hydration failure for `orders` or `transactions` blocks startup and surfaces recovery actions instead of entering `ready`
+- hydration also blocks startup if a repaired `portfolio` cannot be re-persisted safely, because refresh would otherwise restore an older account snapshot
 - `src/utils/valuation.ts` is the shared mark-price resolver for equity, portfolio rows, reserved SELL exposure, and scoring
 - `src/utils/scoring.ts` computes risk, profit, stability, and confidence-based totals
 - `scripts/prerender-public-pages.mjs` runs after the production build, server-renders public routes through `renderPublicRoute.tsx`, writes real React HTML into `#root`, and updates route-specific metadata
@@ -151,5 +163,8 @@ If an active exposure has no valid live or historical mark price, the app surfac
 - Limit / TP / SL triggers settle at configured trigger prices.
 - Monetary and quantity rounding uses shared helpers to reduce floating-point drift.
 - Startup must not enter the ready stage until hydration and initial offline replay settle.
+- A tab that loses persistence ownership must stop writing local state and require reload before trading can continue.
+- Cached history and reconnect backfills must not be treated as executable prices until a live ticker confirms the source.
+- Offline replay must reject malformed candle payloads instead of silently treating them as valid trigger ranges.
 - Public content pages must remain accessible without simulator disclaimer gating.
 - Terminal pages must remain `noindex,follow` so search ranking effort stays focused on public content.

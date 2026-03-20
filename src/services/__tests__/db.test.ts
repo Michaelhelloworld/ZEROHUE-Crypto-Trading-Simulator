@@ -20,6 +20,7 @@ const mockTx = {
 
 const mockDB = {
   getAll: vi.fn().mockResolvedValue([]),
+  get: vi.fn().mockResolvedValue(undefined),
   put: vi.fn().mockResolvedValue('key'),
   delete: vi.fn().mockResolvedValue(undefined),
   clear: vi.fn().mockResolvedValue(undefined),
@@ -39,6 +40,7 @@ describe('dbService', () => {
 
     // Reset individual method mocks to default behaviors if they were overridden
     mockDB.getAll.mockResolvedValue([]);
+    mockDB.get.mockResolvedValue(undefined);
     mockDB.put.mockResolvedValue('key');
     mockStore.getAll.mockResolvedValue([]);
   });
@@ -89,6 +91,15 @@ describe('dbService', () => {
       expect(mockDB.put).toHaveBeenCalledWith('orders', value);
     });
 
+    it('should call db.get with key', async () => {
+      mockDB.get.mockResolvedValue({ key: 'meta', value: 'value', updatedAt: 1 });
+
+      const result = await dbService.get('app_meta', 'meta');
+
+      expect(mockDB.get).toHaveBeenCalledWith('app_meta', 'meta');
+      expect(result).toEqual({ key: 'meta', value: 'value', updatedAt: 1 });
+    });
+
     it('should call db.delete with key', async () => {
       await dbService.delete('orders', 'key');
       expect(mockDB.delete).toHaveBeenCalledWith('orders', 'key');
@@ -102,10 +113,14 @@ describe('dbService', () => {
     it('should clear simulator state in a single multi-store transaction', async () => {
       await dbService.clearSimulatorState();
 
-      expect(mockDB.transaction).toHaveBeenCalledWith(['orders', 'transactions'], 'readwrite');
+      expect(mockDB.transaction).toHaveBeenCalledWith(
+        ['orders', 'transactions', 'app_meta'],
+        'readwrite'
+      );
       expect(mockTx.objectStore).toHaveBeenCalledWith('orders');
       expect(mockTx.objectStore).toHaveBeenCalledWith('transactions');
-      expect(mockStore.clear).toHaveBeenCalledTimes(2);
+      expect(mockTx.objectStore).toHaveBeenCalledWith('app_meta');
+      expect(mockStore.clear).toHaveBeenCalledTimes(3);
     });
 
     it('should reset local persistence by closing and deleting the database', async () => {

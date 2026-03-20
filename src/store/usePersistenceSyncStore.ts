@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type PersistenceTrackedStoreName = 'orders' | 'transactions';
+export type PersistenceTrackedStoreName = 'orders' | 'transactions' | 'portfolio';
 export type PersistenceSyncStatus = 'healthy' | 'retrying' | 'degraded';
 
 export interface PersistenceSyncIssue {
@@ -39,6 +39,7 @@ const createHealthyIssue = (storeName: PersistenceTrackedStoreName): Persistence
 const createDefaultIssues = () => ({
   orders: createHealthyIssue('orders'),
   transactions: createHealthyIssue('transactions'),
+  portfolio: createHealthyIssue('portfolio'),
 });
 
 export const usePersistenceSyncStore = create<PersistenceSyncState>((set) => ({

@@ -20,16 +20,13 @@ import PortfolioView from '../views/PortfolioView';
 import TradeView from '../views/TradeView';
 import { useAppInitialization } from '../../hooks/useAppInitialization';
 import { usePortfolioManager } from '../../hooks/usePortfolioManager';
-import { dbService } from '../../services/db';
 import { usePersistenceSyncStore } from '../../store/usePersistenceSyncStore';
 import { useStore } from '../../store/useStore';
-import { roundUSD } from '../../utils/math';
+import { isDust, roundUSD } from '../../utils/math';
 import { createDefaultPortfolio } from '../../utils/appPersistence';
 import {
-  writeLocalPortfolioStorage,
-  clearLegacyOrderStorage,
-  clearLegacyTransactionStorage,
-  clearLocalSimulatorStorage,
+  executeLocalPersistenceTransition,
+  stageLocalPersistenceTransition,
 } from '../../utils/localSimulatorState';
 import { normalizePathname } from '../../utils/pathname';
 
@@ -50,6 +47,8 @@ const TerminalShell: React.FC = () => {
     initialReplayError,
     retryInitialReplay,
     skipInitialReplay,
+    isCurrentTabWritable,
+    crossTabInvalidationMessage,
   } = useAppInitialization();
   const isAppReady = initializationStage === 'ready';
 
@@ -144,6 +143,8 @@ const TerminalShell: React.FC = () => {
       validTradesCount: 0,
     };
   }, [resolveRecoverableAccountValue]);
+  const canSafelyValueCurrentHoldings =
+    isScoreDataComplete || portfolio.holdings.every((holding) => isDust(holding.amount));
 
   const handleRetryHydration = React.useCallback(() => {
     setRecoveryError(null);
@@ -167,25 +168,42 @@ const TerminalShell: React.FC = () => {
         }
       }
 
+      if (
+        (action === 'clear_orders' || action === 'clear_transactions') &&
+        !canSafelyValueCurrentHoldings
+      ) {
+        setRecoveryError(
+          'Current holdings cannot be valued safely yet. Wait for live prices to load, then retry this action, or use the full local reset instead.'
+        );
+        return;
+      }
+
       setRecoveryError(null);
       setActiveRecoveryAction(action);
 
       try {
         if (action === 'clear_orders') {
-          await dbService.clear('orders');
           const nextPortfolio = createRecoveryPortfolioSnapshot();
-          const didClearLegacyOrders = clearLegacyOrderStorage();
-          const didPersistPortfolio = writeLocalPortfolioStorage(nextPortfolio);
-          if (!didClearLegacyOrders || !didPersistPortfolio) {
+          const transition = {
+            version: 1 as const,
+            action,
+            nextPortfolio,
+          };
+          if (!stageLocalPersistenceTransition(transition)) {
+            throw new Error('failed to stage orders recovery state');
+          }
+
+          const didExecuteTransition = await executeLocalPersistenceTransition(transition);
+          if (!didExecuteTransition) {
             throw new Error('failed to persist orders recovery state');
           }
+
           setPortfolio(nextPortfolio);
           setOrders([]);
           toast.success(
             'Local orders cache cleared and a clean cash snapshot was rebuilt. Retrying startup hydration.'
           );
         } else if (action === 'clear_transactions') {
-          await dbService.clear('transactions');
           const scoreResetBaseline = resolveRecoverableAccountValue();
           const nextPortfolio = {
             ...portfolio,
@@ -196,11 +214,20 @@ const TerminalShell: React.FC = () => {
             grossLoss: 0,
             validTradesCount: 0,
           };
-          const didClearLegacyTransactions = clearLegacyTransactionStorage();
-          const didPersistPortfolio = writeLocalPortfolioStorage(nextPortfolio);
-          if (!didClearLegacyTransactions || !didPersistPortfolio) {
+          const transition = {
+            version: 1 as const,
+            action,
+            nextPortfolio,
+          };
+          if (!stageLocalPersistenceTransition(transition)) {
+            throw new Error('failed to stage transaction recovery state');
+          }
+
+          const didExecuteTransition = await executeLocalPersistenceTransition(transition);
+          if (!didExecuteTransition) {
             throw new Error('failed to persist transaction recovery state');
           }
+
           setPortfolio(nextPortfolio);
           setTransactions([]);
           toast.success(
@@ -208,11 +235,20 @@ const TerminalShell: React.FC = () => {
           );
         } else {
           const nextPortfolio = createDefaultPortfolio();
-          await dbService.resetLocalPersistence();
-          const didClearLocalState = clearLocalSimulatorStorage();
-          if (!didClearLocalState) {
-            throw new Error('failed to clear local simulator state');
+          const transition = {
+            version: 1 as const,
+            action,
+            nextPortfolio,
+          };
+          if (!stageLocalPersistenceTransition(transition)) {
+            throw new Error('failed to stage factory reset snapshot');
           }
+
+          const didExecuteTransition = await executeLocalPersistenceTransition(transition);
+          if (!didExecuteTransition) {
+            throw new Error('failed to persist factory reset snapshot');
+          }
+
           setPortfolio(nextPortfolio);
           setOrders([]);
           setTransactions([]);
@@ -234,6 +270,7 @@ const TerminalShell: React.FC = () => {
     [
       handleRetryHydration,
       createRecoveryPortfolioSnapshot,
+      canSafelyValueCurrentHoldings,
       portfolio,
       resolveRecoverableAccountValue,
       setOrders,
@@ -241,6 +278,37 @@ const TerminalShell: React.FC = () => {
       setTransactions,
     ]
   );
+
+  if (!isCurrentTabWritable) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-[#020617] p-6">
+        <div className="w-full max-w-xl rounded-3xl border border-red-400/20 bg-slate-900/80 p-8 shadow-2xl shadow-black/30 backdrop-blur-xl">
+          <div className="text-[11px] font-mono uppercase tracking-[0.35em] text-red-300/80">
+            Tab Reload Required
+          </div>
+          <h1 className="mt-4 text-2xl font-bold text-white">
+            This tab is no longer allowed to write simulator state
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate-300">
+            {crossTabInvalidationMessage ||
+              'Another ZEROHUE tab rebuilt local persistence. Reload this tab before continuing.'}
+          </p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            ZEROHUE blocked further writes here to avoid reviving stale portfolio, order, or
+            transaction state after a reset or recovery completed elsewhere.
+          </p>
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            <button
+              onClick={handleReloadApp}
+              className="inline-flex items-center justify-center rounded-2xl bg-blue-500 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-400"
+            >
+              Reload App
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (initializationStage === 'hydration_error' && hydrationError) {
     const isOrdersHydrationError = hydrationError.code === 'orders_unavailable';
@@ -296,7 +364,7 @@ const TerminalShell: React.FC = () => {
               <div className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-3">
                 <button
                   onClick={() => void handleHydrationRecovery('clear_orders')}
-                  disabled={activeRecoveryAction !== null}
+                  disabled={activeRecoveryAction !== null || !canSafelyValueCurrentHoldings}
                   className="inline-flex w-full items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-400/15 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {activeRecoveryAction === 'clear_orders'
@@ -304,9 +372,9 @@ const TerminalShell: React.FC = () => {
                     : 'Clear Orders Cache And Rebuild Cash Snapshot'}
                 </button>
                 <p className="mt-2 text-xs leading-5 text-amber-100/80">
-                  Removes persisted orders and rebuilds a clean cash-only portfolio snapshot from
-                  this browser&apos;s current recoverable account value. Transaction history stays
-                  intact.
+                  {canSafelyValueCurrentHoldings
+                    ? 'Removes persisted orders and rebuilds a clean cash-only portfolio snapshot from this browser&apos;s current recoverable account value. Transaction history stays intact.'
+                    : 'Disabled until live prices finish loading for current holdings. ZEROHUE will not collapse open positions into a cash snapshot using incomplete marks.'}
                 </p>
               </div>
             )}
@@ -314,7 +382,7 @@ const TerminalShell: React.FC = () => {
               <div className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-3">
                 <button
                   onClick={() => void handleHydrationRecovery('clear_transactions')}
-                  disabled={activeRecoveryAction !== null}
+                  disabled={activeRecoveryAction !== null || !canSafelyValueCurrentHoldings}
                   className="inline-flex w-full items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-400/15 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {activeRecoveryAction === 'clear_transactions'
@@ -322,8 +390,9 @@ const TerminalShell: React.FC = () => {
                     : 'Clear Transaction History And Reset Performance Snapshot'}
                 </button>
                 <p className="mt-2 text-xs leading-5 text-amber-100/80">
-                  Removes persisted trade history and resets realized performance stats on this
-                  browser only. Orders, portfolio cash, and holdings stay intact.
+                  {canSafelyValueCurrentHoldings
+                    ? 'Removes persisted trade history and resets realized performance stats on this browser only. Orders, portfolio cash, and holdings stay intact.'
+                    : 'Disabled until live prices finish loading for current holdings. ZEROHUE will not rebuild a new performance baseline from incomplete account marks.'}
                 </p>
               </div>
             )}

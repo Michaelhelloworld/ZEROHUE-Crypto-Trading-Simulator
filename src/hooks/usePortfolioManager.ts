@@ -1,14 +1,13 @@
 import { useMemo, useCallback, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
-import { dbService } from '../services/db';
 import { Coin } from '../types';
 import { useStore } from '../store/useStore';
 import { formatUsdWithSymbol } from '../utils/format';
 import { applyStrategyToCoinLots, getAggregateHoldingForCoin } from '../utils/lotAccounting';
 import { calculateAccountEquitySnapshot } from '../utils/valuation';
 import {
-  clearLocalSimulatorStorage,
-  writeLocalPortfolioStorage,
+  executeLocalPersistenceTransition,
+  stageLocalPersistenceTransition,
 } from '../utils/localSimulatorState';
 
 interface UsePortfolioManagerOptions {
@@ -45,12 +44,20 @@ export const usePortfolioManager = ({
         grossLoss: 0,
         validTradesCount: 0,
       };
+      const transition = {
+        version: 1 as const,
+        action: 'account_reset' as const,
+        nextPortfolio: resetPortfolio,
+      };
 
       try {
-        await dbService.clearSimulatorState();
-        const didClearLocalState = clearLocalSimulatorStorage();
-        const didPersistResetPortfolio = writeLocalPortfolioStorage(resetPortfolio);
-        if (!didClearLocalState || !didPersistResetPortfolio) {
+        const didStageResetTransition = stageLocalPersistenceTransition(transition);
+        if (!didStageResetTransition) {
+          throw new Error('local simulator reset transition could not be staged');
+        }
+
+        const didExecuteResetTransition = await executeLocalPersistenceTransition(transition);
+        if (!didExecuteResetTransition) {
           throw new Error('local simulator reset persistence failed');
         }
 
