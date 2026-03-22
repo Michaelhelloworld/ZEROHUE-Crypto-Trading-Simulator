@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ChevronDown, HelpCircle } from 'lucide-react';
 import { useSEO } from '../../hooks/useSEO';
 import { faqItems, faqPage } from '../../content/publicContent';
+import SupportRichText from '../common/SupportRichText';
 
 const FAQView: React.FC = () => {
   useSEO({
@@ -67,7 +68,10 @@ const FAQView: React.FC = () => {
                 >
                   <div className="pt-2 border-t border-white/5">
                     <p className="text-slate-400 text-sm md:text-[15px] leading-relaxed font-medium">
-                      {faq.answer}
+                      <SupportRichText
+                        text={faq.answer}
+                        linkClassName="font-semibold text-blue-300 underline decoration-blue-500/40 underline-offset-4 hover:text-blue-200"
+                      />
                     </p>
                   </div>
                 </div>

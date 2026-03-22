@@ -2,6 +2,7 @@ import React from 'react';
 import { Info, Zap, Shield, Activity, Code, Globe, Layers3 } from 'lucide-react';
 import { useSEO } from '../../hooks/useSEO';
 import { aboutFeatures, aboutPage } from '../../content/publicContent';
+import SupportRichText from '../common/SupportRichText';
 
 const featureIcons = [
   <Activity className="text-emerald-400" size={24} />,
@@ -54,7 +55,10 @@ const AboutView: React.FC = () => {
                     : 'text-slate-400 leading-relaxed text-sm md:text-base'
                 }
               >
-                {paragraph}
+                <SupportRichText
+                  text={paragraph}
+                  linkClassName="font-medium text-blue-300 underline decoration-blue-500/40 underline-offset-4 hover:text-blue-200"
+                />
               </p>
             ))}
           </div>

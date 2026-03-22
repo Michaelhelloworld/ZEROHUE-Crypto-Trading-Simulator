@@ -3,6 +3,7 @@ import { ArrowRight } from 'lucide-react';
 import { Link, NavLink } from 'react-router';
 import { BRAND_NAME, BRAND_SUBTITLE } from '../../constants/branding';
 import ZeroHueLogo from '../common/ZeroHueLogo';
+import SiteFooter from './SiteFooter';
 
 const navigationItems = [
   { label: 'Learn', path: '/learn' },
@@ -10,13 +11,6 @@ const navigationItems = [
   { label: 'FAQ', path: '/faq' },
   { label: 'About', path: '/about' },
 ];
-
-const legalItems = [
-  { label: 'Privacy Policy', path: '/legal/privacy' },
-  { label: 'Terms of Use', path: '/legal/terms' },
-  { label: 'Risk Disclaimer', path: '/legal/disclaimer' },
-];
-
 interface PublicContentLayoutProps {
   children: React.ReactNode;
 }
@@ -70,91 +64,7 @@ const PublicContentLayout: React.FC<PublicContentLayoutProps> = ({ children }) =
       <main className="relative z-10 mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 lg:px-8 lg:py-14">
         {children}
       </main>
-
-      <footer className="relative z-10 border-t border-white/8 px-4 pb-14 pt-10 sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-6xl flex-col gap-8 lg:flex-row lg:items-start lg:justify-between">
-          <div className="max-w-sm">
-            <div className="flex items-center gap-3">
-              <ZeroHueLogo />
-              <div>
-                <div className="text-sm font-black tracking-[0.26em] text-white">{BRAND_NAME}</div>
-                <div className="text-[10px] font-mono uppercase tracking-[0.24em] text-slate-500">
-                  {BRAND_SUBTITLE}
-                </div>
-              </div>
-            </div>
-            <p className="mt-4 text-sm leading-6 text-slate-400">
-              Learn execution, risk, and review with live market context, paper execution, and
-              local-first storage.
-            </p>
-          </div>
-
-          <div className="grid gap-8 sm:grid-cols-3">
-            <div>
-              <h2 className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">
-                Explore
-              </h2>
-              <div className="mt-3 flex flex-col gap-2">
-                {navigationItems.map((item) => (
-                  <Link
-                    key={item.path}
-                    to={item.path}
-                    className="text-sm text-slate-400 transition-colors hover:text-white"
-                  >
-                    {item.label}
-                  </Link>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <h2 className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">
-                Connect
-              </h2>
-              <div className="mt-3 flex flex-col gap-2">
-                <a
-                  href="https://x.com/zerohue_org"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-sm text-slate-400 transition-colors hover:text-white"
-                >
-                  X (Twitter)
-                </a>
-                <a
-                  href="https://discord.gg/N48aHv9xjW"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-sm text-slate-400 transition-colors hover:text-white"
-                >
-                  Discord
-                </a>
-              </div>
-            </div>
-
-            <div>
-              <h2 className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">
-                Legal
-              </h2>
-              <div className="mt-3 flex flex-col gap-2">
-                {legalItems.map((item) => (
-                  <Link
-                    key={item.path}
-                    to={item.path}
-                    className="text-sm text-slate-400 transition-colors hover:text-white"
-                  >
-                    {item.label}
-                  </Link>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="mx-auto mt-8 max-w-6xl border-t border-white/8 pt-6 text-[10px] font-mono uppercase tracking-[0.24em] text-slate-600">
-          &copy; 2026 ZEROHUE. Public content pages are indexable. The simulator is for paper
-          trading only.
-        </div>
-      </footer>
+      <SiteFooter showCta={false} />
     </div>
   );
 };

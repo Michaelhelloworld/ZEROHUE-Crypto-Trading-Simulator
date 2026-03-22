@@ -31,7 +31,7 @@ const PrivacySection: React.FC = () => {
               <div>
                 <div className="text-sm font-semibold text-white">Local-first trading practice</div>
                 <div className="text-[10px] font-mono uppercase tracking-[0.28em] text-slate-500">
-                  Simulation safety
+                  No real funds
                 </div>
               </div>
             </div>

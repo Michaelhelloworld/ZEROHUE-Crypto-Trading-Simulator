@@ -6,3 +6,5 @@ export const SITE_URL = 'https://zerohue.org';
 export const HOMEPAGE_TITLE = `${BRAND_NAME} | ${BRAND_SUBTITLE_TITLE}`;
 export const HERO_BRAND_BADGE = `LOCAL-FIRST ${BRAND_SUBTITLE}`;
 export const COPYRIGHT_YEAR = 2026;
+export const CONTACT_EMAIL = 'support@zerohue.org';
+export const BRAND_FOOTER_SUMMARY = 'Local-first crypto trading simulator.';

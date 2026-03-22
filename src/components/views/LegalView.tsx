@@ -6,6 +6,8 @@ import ZeroHueLogo from '../common/ZeroHueLogo';
 import { COPYRIGHT_YEAR } from '../../constants/branding';
 import { useSEO } from '../../hooks/useSEO';
 import { getLegalDocument } from '../../content/publicContent';
+import SupportEmailLink from '../common/SupportEmailLink';
+import SupportRichText from '../common/SupportRichText';
 
 const documentStyling = {
   privacy: {
@@ -135,7 +137,12 @@ const LegalView: React.FC = () => {
               >
                 <h2 className={`text-xl font-bold mb-4 tracking-wide ${color}`}>{item.title}</h2>
                 <div className="text-slate-400 leading-loose text-[15px] md:text-base font-light space-y-4">
-                  <p>{item.desc}</p>
+                  <p>
+                    <SupportRichText
+                      text={item.desc}
+                      linkClassName="font-medium text-blue-300 underline decoration-blue-500/40 underline-offset-4 hover:text-blue-200"
+                    />
+                  </p>
                 </div>
               </motion.section>
             ))}
@@ -144,9 +151,13 @@ const LegalView: React.FC = () => {
       </main>
 
       <footer className="relative z-10 border-t border-white/5 px-4 py-12 pb-safe text-center sm:px-6">
-        <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest">
+        <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest mb-4">
           &copy; {COPYRIGHT_YEAR} ZEROHUE. Strictly an educational simulation.
         </p>
+        <SupportEmailLink
+          label="Contact Support"
+          className="text-[10px] font-mono text-blue-500/60 hover:text-blue-400 uppercase tracking-[0.2em] transition-colors"
+        />
       </footer>
     </div>
   );

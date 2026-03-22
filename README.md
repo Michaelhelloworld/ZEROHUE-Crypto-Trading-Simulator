@@ -146,6 +146,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): runtime structure and data-flow notes
 - `src/App.tsx`: route composition and public/terminal shell split
+- `src/components/layout/PublicContentLayout.tsx`: indexable public content shell for FAQ / About / Learn / Glossary hubs plus learn / glossary detail routes
+- `src/components/layout/SiteFooter.tsx`: shared site footer used by the landing page and `PublicContentLayout` routes
 - `src/hooks/useAppInitialization.ts`: hydration, replay gating, and startup-stage orchestration
 - `src/components/layout/TerminalShell.tsx`: terminal startup gating and recovery UI
 - `src/utils/appPersistence.ts`: persisted-state normalization, reconciliation, and hydration rules

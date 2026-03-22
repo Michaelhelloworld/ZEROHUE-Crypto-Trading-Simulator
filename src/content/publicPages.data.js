@@ -1,3 +1,5 @@
+export const SUPPORT_CONTACT_TOKEN = '{{support-contact}}';
+
 export const faqPage = {
   seoTitle: 'FAQ & Help',
   description:
@@ -72,6 +74,10 @@ export const faqItems = [
     answer:
       'ZEROHUE detects the best exchange endpoint for supported assets so the simulator can subscribe to the most appropriate feed for your region.',
   },
+  {
+    question: 'How do I contact support?',
+    answer: `You can reach us through ${SUPPORT_CONTACT_TOKEN} for any questions about the simulator or legal matters.`,
+  },
 ];
 
 export const aboutPage = {
@@ -82,9 +88,10 @@ export const aboutPage = {
   subheading: 'Local-first crypto trading simulator',
   introTitle: 'What is ZEROHUE?',
   introParagraphs: [
-    'ZEROHUE is a local-first crypto trading simulator built to close the gap between trading theory and repeated practice. The product combines live market context with deterministic paper execution so users can practice entries, exits, and review loops without funding an exchange account.',
+    'ZEROHUE is a local-first crypto trading simulator built to close the gap between trading theory and repeated practice. The product combines live market context with deterministic paper execution so users can practice entries, exits, and review loops without opening or funding an exchange account.',
     'The simulator is designed to feel operational rather than decorative. Live market data arrives from Binance and Coinbase, simulated orders pass through a dedicated matching engine, and portfolio state is persisted on the device so practice history can survive restarts without a backend account system.',
     'ZEROHUE is intentionally conservative when data quality drops. If the platform cannot price active exposure with confidence, it surfaces warnings and avoids optimistic assumptions in scoring and valuation.',
+    `Have questions or feedback? Reach us through ${SUPPORT_CONTACT_TOKEN}.`,
   ],
   simulationNotice:
     'ZEROHUE is strictly a simulation tool. It does not initiate live trades, custody assets, or solicit real deposits. Market context comes from public exchange feeds, while balances and results remain fictional.',
@@ -150,6 +157,10 @@ export const legalDocuments = {
         title: '4. Full User Control',
         desc: 'You can wipe local data via browser settings or the reset workflows inside the simulator.',
       },
+      {
+        title: '5. Contact Information',
+        desc: `Questions about this Privacy Policy? Reach us through ${SUPPORT_CONTACT_TOKEN}.`,
+      },
     ],
   },
   terms: {
@@ -173,6 +184,10 @@ export const legalDocuments = {
         title: '4. Service Availability',
         desc: 'As a local-first application, functionality depends on device state and public exchange connectivity.',
       },
+      {
+        title: '5. Contact Information',
+        desc: `Questions about these Terms of Use? Reach us through ${SUPPORT_CONTACT_TOKEN}.`,
+      },
     ],
   },
   disclaimer: {
@@ -195,6 +210,10 @@ export const legalDocuments = {
       {
         title: '4. Data Accuracy',
         desc: 'Live market data is sourced for simulation purposes and may include delays or differ from institutional market conditions.',
+      },
+      {
+        title: '5. Contact Information',
+        desc: `Questions about this Risk Disclaimer? Reach us through ${SUPPORT_CONTACT_TOKEN}.`,
       },
     ],
   },

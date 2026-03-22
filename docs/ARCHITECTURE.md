@@ -7,7 +7,8 @@ This document summarizes the current runtime structure, public content routes, t
 - `src/index.tsx`: application bootstrap; uses `hydrateRoot(...)` when prerendered HTML already exists in `#root`, otherwise falls back to `createRoot(...)`
 - `src/App.tsx`: top-level client routing, lazy public content routes, disclaimer gating, and scroll reset behavior
 - `src/components/layout/TerminalShell.tsx`: terminal-only shell, startup gating, and terminal views
-- `src/components/layout/PublicContentLayout.tsx`: lightweight shell for indexable public content pages
+- `src/components/layout/PublicContentLayout.tsx`: lightweight shell for indexable FAQ / About / Learn / Glossary routes; reuses the shared site footer without the landing CTA block
+- `src/components/layout/SiteFooter.tsx`: shared footer used by the landing page and `PublicContentLayout` routes
 - `src/prerender/renderPublicRoute.tsx`: build-time server-side route tree used only for prerendering public pages into real React DOM
 
 Public routes:
@@ -23,11 +24,11 @@ Public routes:
 
 Terminal routes:
 
-- `/markets` -> `MarketView`
-- `/portfolio` -> `PortfolioView`
-- `/orders` -> `OrdersView`
-- `/history` -> `AnalysisView`
-- `/trade/:coinId` -> `TradeView`
+- `/markets` -> `TerminalShell` -> `MarketView`
+- `/portfolio` -> `TerminalShell` -> `PortfolioView`
+- `/orders` -> `TerminalShell` -> `OrdersView`
+- `/history` -> `TerminalShell` -> `AnalysisView`
+- `/trade/:coinId` -> `TerminalShell` -> `TradeView`
 
 Global fallback route:
 
@@ -37,12 +38,14 @@ Route metadata is managed through `src/hooks/useSEO.ts`, which updates title, de
 
 Public content prerendering is intentionally split from the client route graph: the browser app keeps public pages lazy-loaded through `App.tsx`, while `renderPublicRoute.tsx` provides a synchronous server-renderable route tree for the build step. This preserves route-level code splitting for `/markets` and other terminal pages while still allowing static public HTML to hydrate cleanly on refresh.
 
+The landing page and `PublicContentLayout` no longer maintain separate footer implementations. They both render `SiteFooter`, with the landing page enabling the CTA block and `PublicContentLayout` routes disabling it so branding, legal links, social links, and support email stay synchronized. `LegalView` still renders its own legal-page footer.
+
 ## 2. UI composition
 
-- `src/components/layout`: sidebar, mobile header, mobile nav, footer, page transitions, terminal shell, and public content shell
+- `src/components/layout`: sidebar, mobile header, mobile nav, shared site footer, page transitions, terminal shell, and public content shell
 - `src/components/views`: page-level views, including the landing page, public content hubs, and legal pages
 - `src/components/views/content`: reusable article and hub renderers for learn / glossary content
-- `src/components/views/intro`: landing-page-only sections (`IntroNav`, `HeroSection`, `WorkflowSection`, `PrivacySection`, `IntroFooter`)
+- `src/components/views/intro`: landing-page sections (`IntroNav`, `HeroSection`, `WorkflowSection`, `PrivacySection`, `IntroFooter`), where `IntroFooter` is now a thin wrapper around the shared `SiteFooter`
 - `src/components/views/trade`: trade-specific modules (`TradeHeader`, `TradePanel`)
 - `src/components/modals`: disclaimer, reset balance, edit position, confirm flows
 - `src/components/common`: shared UI primitives (`PriceDisplay`, `StatCard`, `ZeroHueLogo`, etc.)

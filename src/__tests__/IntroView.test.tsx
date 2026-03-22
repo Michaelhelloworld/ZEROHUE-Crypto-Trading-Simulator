@@ -88,7 +88,7 @@ describe('IntroView', () => {
     expect(screen.getAllByText(/^About$/i).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('link', { name: introPrimaryCtaLabel }).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: introSecondaryCtaLabel })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /Get started in 3 steps\./i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Learn the workflow\./i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Observe' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Simulate' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument();

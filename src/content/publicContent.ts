@@ -1,4 +1,5 @@
 import {
+  SUPPORT_CONTACT_TOKEN as supportContactTokenData,
   aboutFeatures as aboutFeaturesData,
   aboutPage as aboutPageData,
   faqItems as faqItemsData,
@@ -104,6 +105,7 @@ export const faqPage = faqPageData as FAQPage;
 export const aboutPage = aboutPageData as AboutPage;
 export const aboutFeatures = aboutFeaturesData as AboutFeature[];
 export const legalDocuments = legalDocumentsData as Record<string, LegalDocument>;
+export const SUPPORT_CONTACT_TOKEN = supportContactTokenData as string;
 
 export const getTutorialArticle = (slug?: string) =>
   tutorialArticles.find((article) => article.slug === slug);

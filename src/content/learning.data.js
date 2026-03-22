@@ -569,7 +569,7 @@ export const glossaryEntries = [
         id: 'definition',
         title: 'Definition',
         paragraphs: [
-          'Take profit is a predefined exit point used to lock in gains when price reaches a target area.',
+          'Take profit is a preset exit that closes the trade once price reaches a target level.',
           'It keeps the trader from improvising profit-taking in the middle of a moving trade.',
         ],
       },
@@ -607,7 +607,7 @@ export const glossaryEntries = [
         title: 'Definition',
         paragraphs: [
           'A stop-loss is an exit level that closes a trade when price reaches the point where the original idea is no longer valid.',
-          'Its purpose is to contain downside and preserve capital for the next opportunity.',
+          'Its job is to contain the downside and keep capital available for the next setup.',
         ],
       },
       {

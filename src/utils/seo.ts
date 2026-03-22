@@ -33,6 +33,11 @@ export const buildHomepageStructuredData = () => [
     name: BRAND_NAME,
     url: SITE_URL,
     logo: `${SITE_URL}/logo.png`,
+    contactPoint: {
+      '@type': 'ContactPoint',
+      url: `${SITE_URL}/faq`,
+      contactType: 'customer support',
+    },
     sameAs: ['https://x.com/zerohue_org', 'https://discord.gg/N48aHv9xjW'],
   },
 ];

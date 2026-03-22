@@ -32,8 +32,7 @@ const NotFoundView: React.FC = () => {
           </h1>
           <h2 className="text-xl font-bold text-white mb-4">Page Not Found</h2>
           <p className="text-slate-400 text-sm leading-relaxed mb-8">
-            The page you are looking for might have been removed, had its name changed, or is
-            temporarily unavailable.
+            This page doesn&apos;t exist or may have moved.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-3 w-full">

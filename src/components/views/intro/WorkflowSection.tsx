@@ -11,7 +11,7 @@ const WorkflowSection: React.FC = () => {
       <div className="mx-auto max-w-5xl">
         <SectionIntro
           eyebrow="Workflow"
-          title="Get started in 3 steps."
+          title="Learn the workflow."
           description="Observe the market, simulate the order, and review the result."
         />
 

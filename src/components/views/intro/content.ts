@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import { Database, Eye, Layers, Lock, Shield, Terminal } from 'lucide-react';
+import { CONTACT_EMAIL } from '../../../constants/branding';
 
 export interface IntroNavItem {
   label: string;
@@ -44,7 +45,7 @@ export const workflowSteps: WorkflowStep[] = [
     icon: Eye,
     title: 'Observe',
     description: 'Watch price, structure, and momentum before you enter.',
-    accent: 'Read first',
+    accent: 'Read the tape',
   },
   {
     step: '02',
@@ -83,6 +84,7 @@ export const privacySignals: PrivacySignal[] = [
 export const socialLinks: FooterLink[] = [
   { label: 'Discord', href: 'https://discord.gg/N48aHv9xjW' },
   { label: 'X (Twitter)', href: 'https://x.com/zerohue_org' },
+  { label: 'Email', href: `mailto:${CONTACT_EMAIL}` },
 ];
 
 export const resourceLinks: FooterLink[] = [
